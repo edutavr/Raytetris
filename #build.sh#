@@ -1,3 +1,0 @@
-#!/bin/bash
-gcc -o raylibhelloworld.exe main.c  -I include -L lib -lraylib -lgdi32 -lwinmm
-./raylibhelloworld.exe
