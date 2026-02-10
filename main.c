@@ -6,6 +6,8 @@
 #define BOARD_X_AXIS 50
 #define BOARD_Y_AXIS 70
 #define SQUARE_SIZE 24
+#define LEFT  -1
+#define RIGHT  1
 
 typedef enum CellState{
   EMPTY, MOVING_PIECE, PLACED_PIECE, CLEAN_LINE, BOARD_LIMIT
@@ -28,6 +30,12 @@ typedef struct ThemeColors{
   const char *name;
 }ThemeColors;
 
+
+static float holdLeftTime = 0.0f;
+static float holdRightTime = 0.0f;
+
+static const float DAS = 0.15f; // lag to start operating while you press a key (150 ms)
+static const float ARR = 0.05f; // lag to make the piece moving without rushing too much(50 ms)
 
 static bool itsOver = false;
 static bool pieceActive = false;
@@ -87,6 +95,97 @@ static void TickFall(){
   }
 }
 
+static bool CanMove(int direction){
+  for (int y = 0; y < ROWS; y++) {
+    for (int x = 0; x < COLS; x++) {
+      if (grid[x][y] == MOVING_PIECE) {
+	int newX = x + direction;
+	if (grid[newX][y] == BOARD_LIMIT || grid[newX][y] == PLACED_PIECE) {
+	  return false;
+	}
+      }
+    }
+  }
+  return true;
+}
+
+static void MovePiece(int direction) {
+  if (!CanMove(direction)) return;
+  
+  if (direction > 0) {
+    //moves from right to left
+    for (int y = 0; y < ROWS; y++) {
+      for (int x = COLS - 2; x >= 1; x--) {
+	if (grid[x][y] == MOVING_PIECE) {
+	  grid[x + direction][y] = MOVING_PIECE;
+	  grid[x][y] = EMPTY;
+	}
+      }
+    }
+  } else {
+    // now from left to right
+    for (int y = 0; y < ROWS; y++) {
+      for (int x = 1; x < COLS - 1; x++) {
+	if (grid[x][y] == MOVING_PIECE) {
+	  grid[x + direction][y] = MOVING_PIECE;
+	  grid[x][y] = EMPTY;
+	}
+      }
+    }
+  }
+}
+
+static void HandleHorizontalInput(void) {
+  float frameTime = GetFrameTime();
+
+  bool left = IsKeyDown(KEY_LEFT);
+  bool right = IsKeyDown(KEY_RIGHT);
+
+  //blocks movement if both keys are pressed
+  if (left && right) {
+    holdLeftTime = 0.0f;
+    holdRightTime = 0.0f;
+    return;
+  }
+
+  if (left) {
+    //it will only move once in the first frame of the holding
+    if (holdLeftTime == 0.0f) {
+      MovePiece(LEFT);
+    }
+
+    holdLeftTime += frameTime;
+
+    // after DAS, it will turn the movement auto
+    if (holdLeftTime >= DAS) {
+      while (holdLeftTime >= DAS + ARR) {
+	MovePiece(LEFT);
+	holdLeftTime -= ARR;
+      }
+    }
+  } else {
+    holdLeftTime = 0.0f;
+  }
+
+  if (right) {
+    if (holdRightTime == 0.0f) {
+      MovePiece(RIGHT);
+    }
+
+    holdRightTime += frameTime;
+
+    if (holdRightTime >= DAS) {
+      while (holdRightTime >= DAS + ARR) {
+	MovePiece(RIGHT);
+	holdRightTime -= ARR;
+      }
+    }
+  } else {
+    holdRightTime = 0.0f;
+  }
+}
+
+
 static void GenerateGrid(){
   for(int x = 0; x < COLS; x++){
     for(int y = 0; y < ROWS; y++){
@@ -135,13 +234,18 @@ static void GridGraphic(){
 
 static int frameCounter=0;
 
-static int scrollSpeed = 20;
+static int scrollSpeed = 5;
 
 static void UpdateGameplay(){
   
   if(itsOver){
     return;   
   }
+
+  if (pieceActive) {
+    HandleHorizontalInput();
+  }
+
   
   if (!pieceActive) {
     GenerateTestPiece();
@@ -159,13 +263,13 @@ static void UpdateGameplay(){
   
 }
 
-/*static void RestartGame(){
+static void RestartGame(){
   itsOver = false;
   pieceActive = false;
   frameCounter = 0;
 
   GenerateGrid();
- }*/
+}
 
 
 int main() {
