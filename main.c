@@ -76,7 +76,7 @@ static bool itsOver = false;
 
 /* timing + scoring */
 static int frameCounter = 0;
-static int scrollSpeed  = 5;
+static int scrollSpeed  = 3;
 
 static int score = 0;
 static int linesCleared = 0;
@@ -285,29 +285,35 @@ static PiecesFormat RandomType(void) {
 }
 
 static int ClearFullLines(void) {
-  int cleared = 0;
+    int cleared = 0;
+    int writeRow = ROWS - 2;
 
-  for (int y = 0; y < ROWS - 1; y++) {
-    bool full = true;
-    for (int x = 1; x < COLS - 1; x++) {
-      if (grid[x][y] != PLACED_PIECE) { full = false; break; }
-    }
-
-    if (full) {
-      cleared++;
-
-      for (int yy = y; yy > 0; yy--) {
+    //from the bottom to the top
+    for (int readRow = ROWS - 2; readRow >= 0; readRow--) {
+        bool full = true;
         for (int x = 1; x < COLS - 1; x++) {
-          grid[x][yy] = grid[x][yy - 1];
+            if (grid[x][readRow] != PLACED_PIECE) { full = false; break; }
         }
-      }
 
-      for (int x = 1; x < COLS - 1; x++) grid[x][0] = EMPTY;
-      y--;
+        if (full) {
+            cleared++;
+        } else {
+            if (writeRow != readRow) {
+                for (int x = 1; x < COLS - 1; x++) {
+                    grid[x][writeRow] = grid[x][readRow];
+                }
+            }
+            writeRow--;
+        }
     }
-  }
 
-  return cleared;
+    for (int y = writeRow; y >= 0; y--) {
+        for (int x = 1; x < COLS - 1; x++) {
+            grid[x][y] = EMPTY;
+        }
+    }
+
+    return cleared;
 }
 
 /* ===================== SCORING ===================== */
@@ -346,8 +352,9 @@ static void ApplyScoring(int clearedThisMove) {
 
   score += add;
 
-  scrollSpeed = 5 + (level - 1);
+  scrollSpeed = 3 + (level - 1);
   if (scrollSpeed > 30) scrollSpeed = 30;
+  frameCounter = 0;
 }
 
 /* ===================== PIECE ACTIONS ===================== */
@@ -402,6 +409,25 @@ static void TryMove(int dx, int dy) {
 
 static void TryRotateCW(void) {
   int nr = (cur.rot + 1) & 3;
+
+  if (CanPlace(cur.type, nr, cur.x, cur.y)) {
+    cur.rot = nr;
+    return;
+  }
+
+  const int kicks[] = { -1, 1, -2, 2 };
+  for (int i = 0; i < 4; i++) {
+    int kx = kicks[i];
+    if (CanPlace(cur.type, nr, cur.x + kx, cur.y)) {
+      cur.x += kx;
+      cur.rot = nr;
+      return;
+    }
+  }
+}
+
+static void TryRotateCCW(void) {
+  int nr = (cur.rot + 3) & 3;//same as (rot - 1) mod 4
 
   if (CanPlace(cur.type, nr, cur.x, cur.y)) {
     cur.rot = nr;
@@ -558,6 +584,8 @@ static void UpdateGameplay(void) {
 
     if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_Z)) TryRotateCW();
 
+    if (IsKeyPressed(KEY_X)) TryRotateCCW();
+
     if (IsKeyPressed(KEY_SPACE)) {
       HardDrop();
       return;
@@ -589,7 +617,7 @@ static void RestartGame(void) {
   score = 0;
   linesCleared = 0;
   level = 1;
-  scrollSpeed = 5;
+  scrollSpeed = 3;
 
   combo = -1;
   backToBack = false;
@@ -826,7 +854,7 @@ int main(void) {
 
   ThemeColors Themes[THEME_COUNT] = {
     [PURPLE_THEME]={PURPLE,DARKPURPLE, (Color){150, 28, 176,255}, "Purple"},
-    [RED_THEME]={RED, MAROON, (Color){235, 80, 99, 255}, "Red"},
+    [RED_THEME]={(Color){207, 72, 72, 255}, MAROON, (Color){235, 80, 99, 255}, "Red"},
     [GREEN_THEME]={GREEN, DARKGREEN, LIME, "Green"},
     [BLUE_THEME]={BLUE, DARKBLUE, SKYBLUE, "Blue"},
     [YELLOW_THEME]={YELLOW, GOLD, (Color){223, 230, 41,255}, "Yellow"},
@@ -903,7 +931,7 @@ int main(void) {
           score = 0;
           linesCleared = 0;
           level = 1;
-          scrollSpeed = 5;
+          scrollSpeed = 3;
 
           combo = -1;
           backToBack = false;
