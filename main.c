@@ -1,147 +1,442 @@
 #include "raylib.h"
 #include <stdbool.h>
+#include <time.h>
+#include <stdio.h>
+#include <string.h>
 
-#define COLS 12 //2 extra columns to the walls
-#define ROWS 21 //1 extra wall to the floor
+/* ===================== CONFIG ===================== */
+
+#define COLS 12
+#define ROWS 21
 #define BOARD_X_AXIS 50
 #define BOARD_Y_AXIS 70
 #define SQUARE_SIZE 24
 #define LEFT  -1
 #define RIGHT  1
 
+#define PAGE_SIZE 10
+#define MAX_SCORES 200
+#define MAX_NAME_LEN 16
+#define LEADERBOARD_FILE "leaderboard.dat"
+
+/* ===================== TYPES ===================== */
+
 typedef enum CellState{
   EMPTY, MOVING_PIECE, PLACED_PIECE, CLEAN_LINE, BOARD_LIMIT
-}CellState;
+} CellState;
 
-static CellState grid[COLS][ROWS];
+typedef enum PiecesFormat {
+  I, O, T, S, Z, J, L, TETROMINO_COUNT
+} PiecesFormat;
 
 typedef enum MainMenu{
-  MAINSCREEN = 0, GAMEPLAY, SETTINGS
-}MainMenu;
+  MAINSCREEN = 0, GAMEPLAY, SCORES
+} MainMenu;
 
 typedef enum ThemeOptions{
-  PURPLE_THEME,RED_THEME, GREEN_THEME,BLUE_THEME, YELLOW_THEME, ORANGE_THEME, THEME_COUNT
-}ThemeOptions;
+  PURPLE_THEME, RED_THEME, GREEN_THEME, BLUE_THEME, YELLOW_THEME, ORANGE_THEME, THEME_COUNT
+} ThemeOptions;
 
 typedef struct ThemeColors{
   Color background;
   Color text;
   Color highlight;
   const char *name;
-}ThemeColors;
+} ThemeColors;
 
+typedef struct ActivePiece {
+  PiecesFormat type;
+  int rot;   // 0..3
+  int x;
+  int y;
+} ActivePiece;
+
+typedef struct ScoreEntry {
+  char name[MAX_NAME_LEN]; // includes '\0'
+  int value;
+} ScoreEntry;
+
+typedef enum GameOverFlow {
+  GO_ASK_SAVE = 0,
+  GO_ENTER_NAME,
+  GO_SHOW_GAMEOVER
+} GameOverFlow;
+
+/* ===================== GLOBAL STATE ===================== */
+
+static CellState grid[COLS][ROWS];
 
 static float holdLeftTime = 0.0f;
 static float holdRightTime = 0.0f;
 
-static const float DAS = 0.15f; // lag to start operating while you press a key (150 ms)
-static const float ARR = 0.05f; // lag to make the piece moving without rushing too much(50 ms)
+static const float DAS = 0.15f;
+static const float ARR = 0.05f;
 
 static bool itsOver = false;
+
+/* timing + scoring */
+static int frameCounter = 0;
+static int scrollSpeed  = 5;
+
+static int score = 0;
+static int linesCleared = 0;
+static int level = 1;
+
+static int combo = -1;
+static bool backToBack = false;
+
+/* next preview */
+static PiecesFormat nextType;
+
+/* active */
+static ActivePiece cur;
 static bool pieceActive = false;
-static int pieceX = 0;
-static int pieceY = 0;
 
-static void GenerateTestPiece(){
-  pieceX = (COLS - 2) / 2;
-  pieceY = 0;
+/* game over flow */
+static GameOverFlow goFlow = GO_SHOW_GAMEOVER;
+static char nameInput[MAX_NAME_LEN] = {0};
+static int nameLen = 0;
 
-  //Game over decided at the spawnpoint
-  if (grid[pieceX][pieceY] == PLACED_PIECE ||
-      grid[pieceX+1][pieceY] == PLACED_PIECE ||
-      grid[pieceX][pieceY+1] == PLACED_PIECE ||
-      grid[pieceX+1][pieceY+1] == PLACED_PIECE) {
-    itsOver = true;
-    pieceActive = false;
+/* leaderboard */
+static ScoreEntry leaderboard[MAX_SCORES];
+static int leaderboardCount = 0;
+static int scoresPage = 0;
+
+// ===== AUDIO =====
+static Music musicNormal;
+static Music musicFast;
+static bool audioReady = false;
+static bool playingFast = false;
+
+/* ===================== SHAPES ===================== */
+
+static const int SHAPES[TETROMINO_COUNT][4][4][2] = {
+  // I
+  {
+    {{-1,0},{0,0},{1,0},{2,0}},
+    {{1,-1},{1,0},{1,1},{1,2}},
+    {{-1,1},{0,1},{1,1},{2,1}},
+    {{0,-1},{0,0},{0,1},{0,2}},
+  },
+  // O
+  {
+    {{0,0},{1,0},{0,1},{1,1}},
+    {{0,0},{1,0},{0,1},{1,1}},
+    {{0,0},{1,0},{0,1},{1,1}},
+    {{0,0},{1,0},{0,1},{1,1}},
+  },
+  // T
+  {
+    {{-1,0},{0,0},{1,0},{0,1}},
+    {{0,-1},{0,0},{0,1},{1,0}},
+    {{-1,0},{0,0},{1,0},{0,-1}},
+    {{0,-1},{0,0},{0,1},{-1,0}},
+  },
+  // S
+  {
+    {{0,0},{1,0},{-1,1},{0,1}},
+    {{0,-1},{0,0},{1,0},{1,1}},
+    {{0,0},{1,0},{-1,1},{0,1}},
+    {{0,-1},{0,0},{1,0},{1,1}},
+  },
+  // Z
+  {
+    {{-1,0},{0,0},{0,1},{1,1}},
+    {{1,-1},{0,0},{1,0},{0,1}},
+    {{-1,0},{0,0},{0,1},{1,1}},
+    {{1,-1},{0,0},{1,0},{0,1}},
+  },
+  // J
+  {
+    {{-1,0},{0,0},{1,0},{-1,1}},
+    {{0,-1},{0,0},{0,1},{1,1}},
+    {{-1,0},{0,0},{1,0},{1,-1}},
+    {{0,-1},{0,0},{0,1},{-1,-1}},
+  },
+  // L
+  {
+    {{-1,0},{0,0},{1,0},{1,1}},
+    {{0,-1},{0,0},{0,1},{1,-1}},
+    {{-1,0},{0,0},{1,0},{-1,-1}},
+    {{0,-1},{0,0},{0,1},{-1,1}},
+  },
+};
+
+/* ===================== COLOR HELPERS ===================== */
+
+static Color Mix(Color a, Color b, float t) {
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+
+  return (Color){
+    (unsigned char)(a.r + (b.r - a.r) * t),
+    (unsigned char)(a.g + (b.g - a.g) * t),
+    (unsigned char)(a.b + (b.b - a.b) * t),
+    255
+  };
+}
+
+/* ===================== LEADERBOARD (LOAD/SAVE/SORT) ===================== */
+
+static void SortLeaderboard(void) {
+  // simple bubble sort (small lists) descending by score
+  for (int i = 0; i < leaderboardCount - 1; i++) {
+    for (int j = 0; j < leaderboardCount - 1 - i; j++) {
+      if (leaderboard[j].value < leaderboard[j + 1].value) {
+        ScoreEntry tmp = leaderboard[j];
+        leaderboard[j] = leaderboard[j + 1];
+        leaderboard[j + 1] = tmp;
+      }
+    }
+  }
+}
+
+static void SaveLeaderboardToFile(void) {
+  FILE *f = fopen(LEADERBOARD_FILE, "wb");
+  if (!f) return;
+
+  fwrite(&leaderboardCount, sizeof(int), 1, f);
+  fwrite(leaderboard, sizeof(ScoreEntry), (size_t)leaderboardCount, f);
+  fclose(f);
+}
+
+static void LoadLeaderboardFromFile(void) {
+  FILE *f = fopen(LEADERBOARD_FILE, "rb");
+  if (!f) {
+    leaderboardCount = 0;
     return;
   }
-  
-  //Square piece for tests
-  grid[pieceX][pieceY] = MOVING_PIECE;
-  grid[pieceX+1][pieceY] = MOVING_PIECE;
-  grid[pieceX][pieceY+1] = MOVING_PIECE;
-  grid[pieceX+1][pieceY+1] = MOVING_PIECE;
-  
-  pieceActive = true;
+
+  int count = 0;
+  if (fread(&count, sizeof(int), 1, f) != 1) {
+    fclose(f);
+    leaderboardCount = 0;
+    return;
+  }
+
+  if (count < 0) count = 0;
+  if (count > MAX_SCORES) count = MAX_SCORES;
+
+  int readN = (int)fread(leaderboard, sizeof(ScoreEntry), (size_t)count, f);
+  fclose(f);
+
+  leaderboardCount = readN;
+
+  // safety: ensure null termination
+  for (int i = 0; i < leaderboardCount; i++) {
+    leaderboard[i].name[MAX_NAME_LEN - 1] = '\0';
+  }
+
+  SortLeaderboard();
 }
 
-static void TickFall(){
-  for (int y = ROWS - 2; y >= 0; y--) {
-    for (int x = 1; x < COLS - 1; x++) {
-      if (grid[x][y] == MOVING_PIECE) {
-	//The condition below will verify if there's something that blocks the piece's fall. If so, it turns into a placed piece.
-	if (grid[x][y+1] == PLACED_PIECE || grid[x][y+1] == BOARD_LIMIT){
-	  for (int yy = 0; yy < ROWS; yy++){
-	    for (int xx = 0; xx < COLS; xx++){
-	      if (grid[xx][yy] == MOVING_PIECE){
-		grid[xx][yy] = PLACED_PIECE;
-		pieceActive = false;
-	      }
-	    }
-	  }
-	}
-      }
+static void AddScoreToLeaderboard(const char *name, int value) {
+  if (leaderboardCount < MAX_SCORES) {
+    ScoreEntry e = {0};
+    strncpy(e.name, name, MAX_NAME_LEN - 1);
+    e.name[MAX_NAME_LEN - 1] = '\0';
+    e.value = value;
+
+    leaderboard[leaderboardCount++] = e;
+  } else {
+    // list full: replace the last only if better
+    SortLeaderboard();
+    if (leaderboard[leaderboardCount - 1].value < value) {
+      strncpy(leaderboard[leaderboardCount - 1].name, name, MAX_NAME_LEN - 1);
+      leaderboard[leaderboardCount - 1].name[MAX_NAME_LEN - 1] = '\0';
+      leaderboard[leaderboardCount - 1].value = value;
     }
   }
-  
-  //operates from the below to the above. If theres no collision, it keep going down.
-  for (int y = ROWS - 2; y >= 0; y--) {
-    for (int x = 1; x < COLS - 1; x++) {
-      if (grid[x][y] == MOVING_PIECE) {
-	grid[x][y+1] = MOVING_PIECE;
-	grid[x][y] = EMPTY;
-      }
-    }
-  }
+
+  SortLeaderboard();
+  SaveLeaderboardToFile();
 }
 
-static bool CanMove(int direction){
-  for (int y = 0; y < ROWS; y++) {
-    for (int x = 0; x < COLS; x++) {
-      if (grid[x][y] == MOVING_PIECE) {
-	int newX = x + direction;
-	if (grid[newX][y] == BOARD_LIMIT || grid[newX][y] == PLACED_PIECE) {
-	  return false;
-	}
-      }
-    }
+static void RemoveScoreAtIndex(int idx) {
+  if (idx < 0 || idx >= leaderboardCount) return;
+
+  for (int i = idx; i < leaderboardCount - 1; i++) {
+    leaderboard[i] = leaderboard[i + 1];
+  }
+  leaderboardCount--;
+
+  // keep page valid
+  int maxPage = (leaderboardCount <= 0) ? 0 : (leaderboardCount - 1) / PAGE_SIZE;
+  if (scoresPage > maxPage) scoresPage = maxPage;
+
+  SaveLeaderboardToFile();
+}
+
+/* ===================== ENGINE HELPERS ===================== */
+
+static bool CanPlace(PiecesFormat t, int rot, int px, int py) {
+  for (int i = 0; i < 4; i++) {
+    int gx = px + SHAPES[t][rot][i][0];
+    int gy = py + SHAPES[t][rot][i][1];
+
+    if (gx < 0 || gx >= COLS || gy < 0 || gy >= ROWS) return false;
+    if (grid[gx][gy] == BOARD_LIMIT || grid[gx][gy] == PLACED_PIECE) return false;
   }
   return true;
 }
 
-static void MovePiece(int direction) {
-  if (!CanMove(direction)) return;
-  
-  if (direction > 0) {
-    //moves from right to left
-    for (int y = 0; y < ROWS; y++) {
-      for (int x = COLS - 2; x >= 1; x--) {
-	if (grid[x][y] == MOVING_PIECE) {
-	  grid[x + direction][y] = MOVING_PIECE;
-	  grid[x][y] = EMPTY;
-	}
-      }
+static PiecesFormat RandomType(void) {
+  return (PiecesFormat)GetRandomValue(0, TETROMINO_COUNT - 1);
+}
+
+static int ClearFullLines(void) {
+  int cleared = 0;
+
+  for (int y = 0; y < ROWS - 1; y++) {
+    bool full = true;
+    for (int x = 1; x < COLS - 1; x++) {
+      if (grid[x][y] != PLACED_PIECE) { full = false; break; }
     }
-  } else {
-    // now from left to right
-    for (int y = 0; y < ROWS; y++) {
-      for (int x = 1; x < COLS - 1; x++) {
-	if (grid[x][y] == MOVING_PIECE) {
-	  grid[x + direction][y] = MOVING_PIECE;
-	  grid[x][y] = EMPTY;
-	}
+
+    if (full) {
+      cleared++;
+
+      for (int yy = y; yy > 0; yy--) {
+        for (int x = 1; x < COLS - 1; x++) {
+          grid[x][yy] = grid[x][yy - 1];
+        }
       }
+
+      for (int x = 1; x < COLS - 1; x++) grid[x][0] = EMPTY;
+      y--;
+    }
+  }
+
+  return cleared;
+}
+
+/* ===================== SCORING ===================== */
+
+static void ApplyScoring(int clearedThisMove) {
+  int add = 0;
+
+  if (clearedThisMove > 0) {
+    linesCleared += clearedThisMove;
+    level = 1 + (linesCleared / 10);
+  }
+
+  switch (clearedThisMove) {
+    case 1: add = 100 * level; break;
+    case 2: add = 300 * level; break;
+    case 3: add = 500 * level; break;
+    case 4: add = 800 * level; break;
+    default: add = 0; break;
+  }
+
+  // back-to-back only for Tetris (4 lines)
+  if (clearedThisMove == 4) {
+    if (backToBack) add += add / 2; // +50%
+    backToBack = true;
+  } else if (clearedThisMove > 0) {
+    backToBack = false;
+  }
+
+  // combo
+  if (clearedThisMove > 0) {
+    combo++;
+    if (combo > 0) add += (50 * combo * level);
+  } else {
+    combo = -1;
+  }
+
+  score += add;
+
+  scrollSpeed = 5 + (level - 1);
+  if (scrollSpeed > 30) scrollSpeed = 30;
+}
+
+/* ===================== PIECE ACTIONS ===================== */
+
+static void LockCurrentPiece(void) {
+  for (int i = 0; i < 4; i++) {
+    int gx = cur.x + SHAPES[cur.type][cur.rot][i][0];
+    int gy = cur.y + SHAPES[cur.type][cur.rot][i][1];
+    grid[gx][gy] = PLACED_PIECE;
+  }
+  pieceActive = false;
+
+  int cleared = ClearFullLines();
+  ApplyScoring(cleared);
+}
+
+static void GenerateRandomPiece(void) {
+  cur.type = nextType;
+  cur.rot  = 0;
+  cur.x    = (COLS - 2) / 2;
+  cur.y    = 0;
+
+  nextType = RandomType();
+
+  if (!CanPlace(cur.type, cur.rot, cur.x, cur.y)) {
+    itsOver = true;
+    pieceActive = false;
+    
+    
+    // start the "save score?" flow
+    goFlow = GO_ASK_SAVE;
+    nameInput[0] = '\0';
+    nameLen = 0;
+
+    return;
+  }
+
+  pieceActive = true;
+}
+
+static void TryMove(int dx, int dy) {
+  int nx = cur.x + dx;
+  int ny = cur.y + dy;
+
+  if (CanPlace(cur.type, cur.rot, nx, ny)) {
+    cur.x = nx;
+    cur.y = ny;
+  } else if (dy == 1) {
+    LockCurrentPiece();
+  }
+}
+
+static void TryRotateCW(void) {
+  int nr = (cur.rot + 1) & 3;
+
+  if (CanPlace(cur.type, nr, cur.x, cur.y)) {
+    cur.rot = nr;
+    return;
+  }
+
+  const int kicks[] = { -1, 1, -2, 2 };
+  for (int i = 0; i < 4; i++) {
+    int kx = kicks[i];
+    if (CanPlace(cur.type, nr, cur.x + kx, cur.y)) {
+      cur.x += kx;
+      cur.rot = nr;
+      return;
     }
   }
 }
 
+static void HardDrop(void) {
+  int dropped = 0;
+  while (CanPlace(cur.type, cur.rot, cur.x, cur.y + 1)) {
+    cur.y += 1;
+    dropped++;
+  }
+  score += dropped * 2 * level;
+  LockCurrentPiece();
+}
+
+/* ===================== INPUT (HORIZONTAL) ===================== */
+
 static void HandleHorizontalInput(void) {
   float frameTime = GetFrameTime();
 
-  bool left = IsKeyDown(KEY_LEFT);
+  bool left  = IsKeyDown(KEY_LEFT);
   bool right = IsKeyDown(KEY_RIGHT);
 
-  //blocks movement if both keys are pressed
   if (left && right) {
     holdLeftTime = 0.0f;
     holdRightTime = 0.0f;
@@ -149,18 +444,13 @@ static void HandleHorizontalInput(void) {
   }
 
   if (left) {
-    //it will only move once in the first frame of the holding
-    if (holdLeftTime == 0.0f) {
-      MovePiece(LEFT);
-    }
-
+    if (holdLeftTime == 0.0f) TryMove(LEFT, 0);
     holdLeftTime += frameTime;
 
-    // after DAS, it will turn the movement auto
     if (holdLeftTime >= DAS) {
       while (holdLeftTime >= DAS + ARR) {
-	MovePiece(LEFT);
-	holdLeftTime -= ARR;
+        TryMove(LEFT, 0);
+        holdLeftTime -= ARR;
       }
     }
   } else {
@@ -168,16 +458,13 @@ static void HandleHorizontalInput(void) {
   }
 
   if (right) {
-    if (holdRightTime == 0.0f) {
-      MovePiece(RIGHT);
-    }
-
+    if (holdRightTime == 0.0f) TryMove(RIGHT, 0);
     holdRightTime += frameTime;
 
     if (holdRightTime >= DAS) {
       while (holdRightTime >= DAS + ARR) {
-	MovePiece(RIGHT);
-	holdRightTime -= ARR;
+        TryMove(RIGHT, 0);
+        holdRightTime -= ARR;
       }
     }
   } else {
@@ -185,247 +472,630 @@ static void HandleHorizontalInput(void) {
   }
 }
 
+/* ===================== GRID ===================== */
 
-static void GenerateGrid(){
-  for(int x = 0; x < COLS; x++){
-    for(int y = 0; y < ROWS; y++){
-      if (x == 0 || x == COLS - 1 || y == ROWS - 1){
-        grid[x][y] = BOARD_LIMIT;
-      } else {
-        grid[x][y] = EMPTY;
+static void GenerateGrid(void) {
+  for (int x = 0; x < COLS; x++) {
+    for (int y = 0; y < ROWS; y++) {
+      if (x == 0 || x == COLS - 1 || y == ROWS - 1) grid[x][y] = BOARD_LIMIT;
+      else grid[x][y] = EMPTY;
+    }
+  }
+}
+
+/* ===================== DRAW HELPERS ===================== */
+
+static void GridGraphic(Color gridLine, Color placedColor, Color wallColor) {
+  for (int y = 0; y < ROWS; y++) {
+    for (int x = 0; x < COLS; x++) {
+      int xPos = BOARD_X_AXIS + x * SQUARE_SIZE;
+      int yPos = BOARD_Y_AXIS + y * SQUARE_SIZE;
+
+      switch (grid[x][y]) {
+        case EMPTY:
+          DrawRectangleLines(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, gridLine);
+          break;
+
+        case PLACED_PIECE:
+          DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, placedColor);
+          DrawRectangleLines(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, gridLine);
+          break;
+
+        case BOARD_LIMIT:
+          DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, wallColor);
+          break;
+
+        default:
+          break;
       }
     }
   }
 }
 
-static void GridGraphic(){
-  for (int y = 0; y < ROWS; y++)
-      {
-      for (int x = 0; x < COLS; x++)
-	  {
-	  int xPos = BOARD_X_AXIS + x * SQUARE_SIZE;
-            int yPos = BOARD_Y_AXIS + y * SQUARE_SIZE;
-	    
-            switch (grid[x][y])
-	      {
-	      case EMPTY:
-		DrawRectangleLines(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, LIGHTGRAY);
-		break;
-		
-	      case MOVING_PIECE:
-		DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, DARKGRAY);
-		break;
-		
-	      case PLACED_PIECE:
-		DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, GRAY);
-		break;
-		
-	      case CLEAN_LINE:
-		DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, ORANGE);
-		break;
-		
-	      case BOARD_LIMIT:
-		DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, LIGHTGRAY);
-		break;	  
-	      }
-        }
-    }
+/* falling piece WITHOUT outline */
+static void DrawActivePiece(Color activeColor) {
+  if (!pieceActive) return;
+
+  for (int i = 0; i < 4; i++) {
+    int gx = cur.x + SHAPES[cur.type][cur.rot][i][0];
+    int gy = cur.y + SHAPES[cur.type][cur.rot][i][1];
+
+    int xPos = BOARD_X_AXIS + gx * SQUARE_SIZE;
+    int yPos = BOARD_Y_AXIS + gy * SQUARE_SIZE;
+
+    DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, activeColor);
+  }
 }
 
-static int frameCounter=0;
+/* preview WITHOUT outline */
+static void DrawPiecePreview(PiecesFormat t, int px, int py, int cell, Color fill) {
+  int minX = 999, minY = 999;
 
-static int scrollSpeed = 5;
-
-static void UpdateGameplay(){
-  
-  if(itsOver){
-    return;   
+  for (int i = 0; i < 4; i++) {
+    int dx = SHAPES[t][0][i][0];
+    int dy = SHAPES[t][0][i][1];
+    if (dx < minX) minX = dx;
+    if (dy < minY) minY = dy;
   }
+
+  for (int i = 0; i < 4; i++) {
+    int dx = SHAPES[t][0][i][0] - minX;
+    int dy = SHAPES[t][0][i][1] - minY;
+    DrawRectangle(px + dx * cell, py + dy * cell, cell, cell, fill);
+  }
+}
+
+/* ===================== GAMEPLAY UPDATE ===================== */
+
+static void UpdateGameplay(void) {
+  if (itsOver) return;
+
+  if (!pieceActive) GenerateRandomPiece();
+  if (itsOver) return;
 
   if (pieceActive) {
     HandleHorizontalInput();
+
+    if (IsKeyPressed(KEY_UP) || IsKeyPressed(KEY_Z)) TryRotateCW();
+
+    if (IsKeyPressed(KEY_SPACE)) {
+      HardDrop();
+      return;
+    }
+
+    // soft drop (+1*level per cell moved)
+    if (IsKeyDown(KEY_DOWN)) {
+      int oldY = cur.y;
+      TryMove(0, 1);
+      if (cur.y > oldY) score += 1 * level;
+    }
   }
 
-  
-  if (!pieceActive) {
-    GenerateTestPiece();
-  }
-  
-  if (itsOver){
-    return;
-  }
-  
-  frameCounter+=scrollSpeed;
+  frameCounter += scrollSpeed;
   if (frameCounter >= 60) {
     frameCounter = 0;
-    TickFall();
+    TryMove(0, 1);
   }
-  
 }
 
-static void RestartGame(){
+static void RestartGame(void) {
   itsOver = false;
   pieceActive = false;
   frameCounter = 0;
 
+  holdLeftTime = 0.0f;
+  holdRightTime = 0.0f;
+
+  score = 0;
+  linesCleared = 0;
+  level = 1;
+  scrollSpeed = 5;
+
+  combo = -1;
+  backToBack = false;
+
+  goFlow = GO_SHOW_GAMEOVER;
+  nameInput[0] = '\0';
+  nameLen = 0;
+
   GenerateGrid();
+  nextType = RandomType();
 }
 
+/* ===================== GAME OVER UI (SAVE SCORE?) ===================== */
 
-int main() {
+static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle noBtn, Rectangle inputBox) {
+  Vector2 m = GetMousePosition();
+
+  if (goFlow == GO_ASK_SAVE) {
+    if (CheckCollisionPointRec(m, yesBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      goFlow = GO_ENTER_NAME;
+      nameInput[0] = '\0';
+      nameLen = 0;
+    }
+    if (CheckCollisionPointRec(m, noBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      goFlow = GO_SHOW_GAMEOVER;
+    }
+  } else if (goFlow == GO_ENTER_NAME) {
+    // typing
+    int c = GetCharPressed();
+    while (c > 0) {
+      if (c >= 32 && c <= 126) { // basic printable ASCII
+        if (nameLen < MAX_NAME_LEN - 1) {
+          nameInput[nameLen++] = (char)c;
+          nameInput[nameLen] = '\0';
+        }
+      }
+      c = GetCharPressed();
+    }
+
+    if (IsKeyPressed(KEY_BACKSPACE)) {
+      if (nameLen > 0) {
+        nameLen--;
+        nameInput[nameLen] = '\0';
+      }
+    }
+
+    // enter to save
+    if (IsKeyPressed(KEY_ENTER)) {
+      const char *finalName = nameInput;
+      if (nameLen == 0) finalName = "PLAYER";
+      AddScoreToLeaderboard(finalName, score);
+      goFlow = GO_SHOW_GAMEOVER;
+    }
+
+    // click outside? (optional) ignore
+    (void)panel; (void)inputBox;
+  }
+}
+
+static void DrawGameOverOverlay(
+  int screenWidth, int screenHeight,
+  Color hudText, Color highlight
+) {
+  Rectangle panel = (Rectangle){ 160, 170, 480, 230 };
+  DrawRectangleRec(panel, (Color){0, 0, 0, 200});
+  DrawRectangleLinesEx(panel, 2, RAYWHITE);
+
+  int cx = screenWidth / 2;
+
+  if (goFlow == GO_ASK_SAVE) {
+    const char *q = "Save score?";
+    int qW = MeasureText(q, 34);
+    DrawText(q, cx - qW/2, (int)panel.y + 25, 34, hudText);
+
+    DrawText(TextFormat("Score: %d", score), (int)panel.x + 30, (int)panel.y + 80, 22, hudText);
+
+    Rectangle yesBtn = (Rectangle){ panel.x + 110, panel.y + 150, 110, 40 };
+    Rectangle noBtn  = (Rectangle){ panel.x + panel.width - 220, panel.y + 150, 110, 40 };
+
+    Vector2 m = GetMousePosition();
+    Color yesC = CheckCollisionPointRec(m, yesBtn) ? highlight : hudText;
+    Color noC  = CheckCollisionPointRec(m, noBtn)  ? highlight : hudText;
+
+    DrawRectangleLinesEx(yesBtn, 2, yesC);
+    DrawRectangleLinesEx(noBtn, 2, noC);
+
+    DrawText("YES", (int)yesBtn.x + 30, (int)yesBtn.y + 8, 24, yesC);
+    DrawText("NO",  (int)noBtn.x  + 40, (int)noBtn.y  + 8, 24, noC);
+
+    // update interactions
+    UpdateGameOverOverlay(panel, yesBtn, noBtn, (Rectangle){0});
+
+  } else if (goFlow == GO_ENTER_NAME) {
+    const char *t = "Type your name:";
+    int tW = MeasureText(t, 28);
+    DrawText(t, cx - tW/2, (int)panel.y + 25, 28, hudText);
+
+    DrawText(TextFormat("Score: %d", score), (int)panel.x + 30, (int)panel.y + 70, 22, hudText);
+
+    Rectangle inputBox = (Rectangle){ panel.x + 80, panel.y + 120, panel.width - 160, 45 };
+
+    Vector2 m = GetMousePosition();
+    Color boxC = CheckCollisionPointRec(m, inputBox) ? highlight : hudText;
+
+    DrawRectangleLinesEx(inputBox, 2, boxC);
+    DrawText(nameInput, (int)inputBox.x + 10, (int)inputBox.y + 10, 24, hudText);
+
+    const char *hint = "Press ENTER to save";
+    int hW = MeasureText(hint, 18);
+    DrawText(hint, cx - hW/2, (int)panel.y + 180, 18, hudText);
+
+    UpdateGameOverOverlay(panel, (Rectangle){0}, (Rectangle){0}, inputBox);
+
+  } else {
+    // GO_SHOW_GAMEOVER: old UI stays in main drawing (kept below)
+  }
+}
+
+/* ===================== SCORES SCREEN ===================== */
+
+static void UpdateScoresScreen(Rectangle backBtn, Rectangle prevBtn, Rectangle nextBtn,
+                               Rectangle clearBtns[PAGE_SIZE], int indices[PAGE_SIZE]) {
+  Vector2 m = GetMousePosition();
+
+  if (CheckCollisionPointRec(m, prevBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+    if (scoresPage > 0) scoresPage--;
+  }
+  if (CheckCollisionPointRec(m, nextBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+    int maxPage = (leaderboardCount <= 0) ? 0 : (leaderboardCount - 1) / PAGE_SIZE;
+    if (scoresPage < maxPage) scoresPage++;
+  }
+
+  // clear buttons
+  for (int i = 0; i < PAGE_SIZE; i++) {
+    if (indices[i] < 0) continue;
+    if (CheckCollisionPointRec(m, clearBtns[i]) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+      RemoveScoreAtIndex(indices[i]);
+      break;
+    }
+  }
+
+  // back handled in main loop
+  (void)backBtn;
+}
+
+static void InitGameAudio(void) {
+  InitAudioDevice();
+
+  musicNormal = LoadMusicStream("songs/Victor-Severo-RaytetrisRGB.ogg");
+  musicFast   = LoadMusicStream("songs/Victor-Severo-RaytetrisRGB-Brutal.ogg");
+
+  SetMusicVolume(musicNormal, 0.50f);
+  SetMusicVolume(musicFast,   0.50f);
+
+  audioReady = true;
+  playingFast = false;
+}
+
+static void UnloadGameAudio(void) {
+  if (!audioReady) return;
+
+  StopMusicStream(musicNormal);
+  StopMusicStream(musicFast);
+
+  UnloadMusicStream(musicNormal);
+  UnloadMusicStream(musicFast);
+
+  CloseAudioDevice();
+  audioReady = false;
+}
+
+static bool IsDangerZone(void) {
+  // Top 7 rows: y = 0..6
+  for (int y = 0; y <= 6; y++) {
+    for (int x = 1; x < COLS - 1; x++) {
+      if (grid[x][y] == PLACED_PIECE) return true;
+    }
+  }
+  return false;
+}
+
+static void StartGameplayMusic(void) {
+  if (!audioReady) return;
+
+  StopMusicStream(musicFast);
+  playingFast = false;
+
+  PlayMusicStream(musicNormal);
+}
+
+static void StopGameplayMusic(void) {
+  if (!audioReady) return;
+  StopMusicStream(musicNormal);
+  StopMusicStream(musicFast);
+  playingFast = false;
+}
+
+static void SwitchToFastMusic(void) {
+  if (!audioReady || playingFast) return;
+
+  StopMusicStream(musicNormal);
+  PlayMusicStream(musicFast);
+  playingFast = true;
+}
+
+static void SwitchToNormalMusic(void) {
+  if (!audioReady || !playingFast) return;
+
+  StopMusicStream(musicFast);
+  PlayMusicStream(musicNormal);
+  playingFast = false;
+}
+
+static void UpdateGameplayMusic(void) {
+  if (!audioReady) return;
+
+  //keep streams updated so the music does not stop suddenly
+  if (playingFast) UpdateMusicStream(musicFast);
+  else             UpdateMusicStream(musicNormal);
+
+  //changes music state
+  if (!itsOver) {
+    if (IsDangerZone()) SwitchToFastMusic();
+    else                SwitchToNormalMusic();
+  } else {
+    //stops music at game over
+    StopGameplayMusic();
+  }
+}
+
+/* ===================== MAIN ===================== */
+
+int main(void) {
 
   ThemeColors Themes[THEME_COUNT] = {
-    [PURPLE_THEME]={PURPLE, DARKPURPLE, BLACK, "Purple"},
-    [RED_THEME]={RED, MAROON, RAYWHITE, "Red"},
+    [PURPLE_THEME]={PURPLE,DARKPURPLE, (Color){150, 28, 176,255}, "Purple"},
+    [RED_THEME]={RED, MAROON, (Color){235, 80, 99, 255}, "Red"},
     [GREEN_THEME]={GREEN, DARKGREEN, LIME, "Green"},
     [BLUE_THEME]={BLUE, DARKBLUE, SKYBLUE, "Blue"},
-    [YELLOW_THEME]={YELLOW, GOLD, (Color){111,118,17,255}, "Yellow"},
-    [ORANGE_THEME]={ORANGE, (Color){230,76,20,255},(Color){168,63,24,255} , "Orange"},
+    [YELLOW_THEME]={YELLOW, GOLD, (Color){223, 230, 41,255}, "Yellow"},
+    [ORANGE_THEME]={ORANGE, (Color){230,76,20,255}, (Color){245, 148, 12,255}, "Orange"},
   };
-  
+
   const int screenWidth = 800;
   const int screenHeight = 600;
-  const char *title = "TETRIS BETA V0.1 by edutavr";
+
+  const char *title = "RAYTETRIS RGB BETA V0.1 by edutavr";
   const char *gameOver = "GAME OVER";
-  const char *restartText="Click here to restart";
-  int fontSize = 45; 
+  const char *restartText = "Click here to restart";
+  const int fontSize = 39;
 
   InitWindow(screenWidth, screenHeight, "TETRIS BETA V0.1");
+  SetTargetFPS(60);
+  InitGameAudio();
+  SetRandomSeed((unsigned int)time(NULL));
+  nextType = RandomType();
+
+  LoadLeaderboardFromFile();
 
   MainMenu currentScreen = MAINSCREEN;
-  
   ThemeOptions currentTheme = PURPLE_THEME;
-  
-  SetTargetFPS(60);
-  
-  int textWidth = MeasureText(title, fontSize);
-  int textWidth2 = MeasureText("Play Game", 40);
-  int textWidth3 = MeasureText("Settings", 40);
 
-  
-  int centerTitle = (screenWidth - textWidth)/2;
-  int centerPlay = (screenWidth - textWidth2)/2;
-  int centerSettings = (screenWidth - textWidth3)/2;
+  int textWidth  = MeasureText(title, fontSize);
+  int playW      = MeasureText("Play Game", 40);
+  int scoresW    = MeasureText("Scores", 40);
 
-  int goSize;
-  int restartSize;
+  int centerTitle  = (screenWidth - textWidth) / 2;
+  int centerPlay   = (screenWidth - playW) / 2;
+  int centerScores = (screenWidth - scoresW) / 2;
 
-  Rectangle playButton = { centerPlay, 240, textWidth2, 40 };
-  Rectangle settingsButton = { centerSettings, 300, textWidth3, 40 };
+  Rectangle playButton   = { (float)centerPlay, 240, (float)playW, 40 };
+  Rectangle scoresButton = { (float)centerScores, 300, (float)scoresW, 40 };
 
-  
   while (!WindowShouldClose()) {
 
-    Color bgColor = Themes[currentTheme].background;
-    Color textBase = Themes[currentTheme].text;
+    Color bgColor   = Themes[currentTheme].background;
+    Color textBase  = Themes[currentTheme].text;
     Color highlight = Themes[currentTheme].highlight;
+
+    // derive gameplay palette
+    Color gameBg      = Mix(bgColor, BLACK, 0.65f);
+    Color gridLine    = Mix(textBase, gameBg, 0.70f);
+    Color wallColor   = Mix(textBase, gameBg, 0.30f);
+    Color activeColor = highlight;
+    Color placedColor = Mix(highlight, gameBg, 0.55f);
+    Color hudText     = Mix(textBase, RAYWHITE, 0.65f);
 
     Vector2 mousePoint = GetMousePosition();
 
-    int textWidth5 = MeasureText("TELA DO JOGO",20);
-    Rectangle backToTheBegginning={20,20,textWidth5,20};
+    // top-left back label used in GAMEPLAY and SCORES
+    int backW = MeasureText("BACK", 20);
+    Rectangle backBtn = { 20, 20, (float)backW, 20 };
 
     const char *themeLabel = TextFormat("Theme: %s", Themes[currentTheme].name);
-    int textWidth4 = MeasureText(themeLabel, 20);
-    Rectangle themeButton = {centerPlay+25, 550, textWidth4, 20};
-      
-    Color titleColor = textBase;
-    Color playColor = textBase;
-    Color settingsColor = textBase;
-    Color themeColor = textBase;
+    int themeW = MeasureText(themeLabel, 20);
+    Rectangle themeButton = { (float)(centerPlay + 25), 550, (float)themeW, 20 };
 
-    switch(currentScreen){
-     case MAINSCREEN:{
-       if (CheckCollisionPointRec(mousePoint, playButton)) {
-  	 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	   GenerateGrid();
-	   currentScreen = GAMEPLAY;
-	 }
-       }
-       if (CheckCollisionPointRec(mousePoint, settingsButton)) {
-	 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	   currentScreen = SETTINGS;
-	 }
-       }
-       if (CheckCollisionPointRec(mousePoint, themeButton)) {
-	 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	   currentTheme = (ThemeOptions)((currentTheme + 1) % THEME_COUNT);
-	 }
-       }
-     }break;
-     case GAMEPLAY:{
-       UpdateGameplay();
-       
-       if (CheckCollisionPointRec(mousePoint, backToTheBegginning)) {
-	 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	   currentScreen = MAINSCREEN;
-	 }
-       }
-       
-       if (itsOver && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	 RestartGame();
-       }
-       
-       if (CheckCollisionPointRec(mousePoint, backToTheBegginning)) {
-	 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	   currentScreen = MAINSCREEN;
-	 }
-       }
-     }break;
+    // -------------------- UPDATE (input/state) --------------------
+    switch (currentScreen) {
+
+      case MAINSCREEN: {
+        if (CheckCollisionPointRec(mousePoint, playButton) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+          GenerateGrid();
+
+          itsOver = false;
+          pieceActive = false;
+          frameCounter = 0;
+          holdLeftTime = 0.0f;
+          holdRightTime = 0.0f;
+
+          score = 0;
+          linesCleared = 0;
+          level = 1;
+          scrollSpeed = 5;
+
+          combo = -1;
+          backToBack = false;
+
+          goFlow = GO_SHOW_GAMEOVER;
+          nameInput[0] = '\0';
+          nameLen = 0;
+
+          nextType = RandomType();
+
+          currentScreen = GAMEPLAY;
+	  StartGameplayMusic();
+        }
+
+        if (CheckCollisionPointRec(mousePoint, scoresButton) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+          scoresPage = 0;
+          currentScreen = SCORES;
+        }
+
+        if (CheckCollisionPointRec(mousePoint, themeButton) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+          currentTheme = (ThemeOptions)((currentTheme + 1) % THEME_COUNT);
+        }
+      } break;
+
+      case GAMEPLAY: {
+        UpdateGameplay();
+	UpdateGameplayMusic();
+
+        if (CheckCollisionPointRec(mousePoint, backBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+	  StopGameplayMusic();
+          currentScreen = MAINSCREEN;
+        }
+
+        // only allow restart click when the classic game over panel is visible
+        if (itsOver && goFlow == GO_SHOW_GAMEOVER && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+          RestartGame();
+	  StartGameplayMusic();
+        }
+      } break;
+
+      case SCORES: {
+        if (CheckCollisionPointRec(mousePoint, backBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+          currentScreen = MAINSCREEN;
+	  StopGameplayMusic();
+        }
+
+        // build clear buttons list for current page
+        Rectangle clearBtns[PAGE_SIZE] = {0};
+        int idxs[PAGE_SIZE];
+        for (int i = 0; i < PAGE_SIZE; i++) idxs[i] = -1;
+
+        int start = scoresPage * PAGE_SIZE;
+
+        for (int row = 0; row < PAGE_SIZE; row++) {
+          int idx = start + row;
+          if (idx >= leaderboardCount) break;
+          idxs[row] = idx;
+
+          int y = 140 + row * 36;
+          clearBtns[row] = (Rectangle){ 640, (float)(y - 2), 80, 28 };
+        }
+
+        Rectangle prevBtn = { 270, 520, 90, 32 };
+        Rectangle nextBtn = { 440, 520, 90, 32 };
+
+        UpdateScoresScreen(backBtn, prevBtn, nextBtn, clearBtns, idxs);
+      } break;
     }
+
+    // -------------------- DRAW --------------------
     BeginDrawing();
-    switch(currentScreen){
-    //draw-menu-----------------------------------------------------------
-    case(MAINSCREEN):      
-      ClearBackground(bgColor);
-      DrawText(title, centerTitle, 20, fontSize, titleColor);
-      if (CheckCollisionPointRec(mousePoint, playButton)) {
-	playColor = highlight;
-      }
-      DrawText("Play Game", centerPlay , 240, 40, playColor);
-      if (CheckCollisionPointRec(mousePoint, settingsButton)) {
-	settingsColor = highlight;
-      }
-      DrawText("Settings", centerSettings , 300, 40, settingsColor);
-      DrawText(themeLabel, centerPlay + 25 , 550, 20, themeColor);
-      break;
-      
-case (GAMEPLAY): {
-    ClearBackground(BLACK);
-    DrawText("TELA DO JOGO", 20, 20, 20, WHITE);
-    GridGraphic();
 
-    if (itsOver) {
-        const int goSize = 50;
-        const int restartSize = 20;
+    switch (currentScreen) {
 
-        int goWidth = MeasureText(gameOver, goSize);
-        int restartWidth = MeasureText(restartText, restartSize);
+      case MAINSCREEN: {
+        ClearBackground(bgColor);
 
-        int centerX = screenWidth / 2;
+        DrawText(title, centerTitle, 20, fontSize, textBase);
 
-        DrawRectangle(180, 200, 440, 180, (Color){0, 0, 0, 200});
-        DrawRectangleLines(180, 200, 440, 180, RAYWHITE);
+        Color playColor = CheckCollisionPointRec(mousePoint, playButton) ? highlight : textBase;
+        DrawText("Play Game", centerPlay, 240, 40, playColor);
 
-        DrawText(gameOver, centerX - goWidth / 2 ,230, goSize, RED);
+        Color scoresColor = CheckCollisionPointRec(mousePoint, scoresButton) ? highlight : textBase;
+        DrawText("Scores", centerScores, 300, 40, scoresColor);
 
-        DrawText(restartText, centerX - restartWidth / 2, 300, restartSize, RAYWHITE);
+        DrawText(themeLabel, centerPlay + 25, 550, 20, textBase);
+      } break;
+
+      case GAMEPLAY: {
+        ClearBackground(gameBg);
+
+        DrawText("BACK", 20, 20, 20, hudText);
+
+        GridGraphic(gridLine, placedColor, wallColor);
+        DrawActivePiece(activeColor);
+
+        DrawText(TextFormat("Score: %d", score), 380, 100, 20, hudText);
+        DrawText(TextFormat("Lines: %d", linesCleared), 380, 130, 20, hudText);
+        DrawText(TextFormat("Level: %d", level), 380, 160, 20, hudText);
+
+        DrawText("Next:", 380, 210, 20, hudText);
+        DrawPiecePreview(nextType, 380, 240, 18, activeColor);
+
+        if (itsOver) {
+          // 1) first show "save score?" / name input
+          if (goFlow != GO_SHOW_GAMEOVER) {
+            DrawGameOverOverlay(screenWidth, screenHeight, hudText, highlight);
+          } else {
+            // 2) then show the classic game over screen you already had
+            const int goSize = 50;
+            const int restartSize = 20;
+
+            int goWidth = MeasureText(gameOver, goSize);
+            int restartWidth = MeasureText(restartText, restartSize);
+
+            int centerX = screenWidth / 2;
+
+            DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){0, 0, 0, 130});
+
+            DrawText(gameOver, centerX - goWidth / 2, 230, goSize, highlight);
+            DrawText(restartText, centerX - restartWidth / 2, 300, restartSize, hudText);
+          }
+        }
+      } break;
+
+      case SCORES: {
+        ClearBackground(bgColor);
+
+        DrawText("BACK", 20, 20, 20, textBase);
+
+        DrawText("LEADERBOARD", 260, 30, 36, textBase);
+
+        int start = scoresPage * PAGE_SIZE;
+        int end = start + PAGE_SIZE;
+        if (end > leaderboardCount) end = leaderboardCount;
+
+        // headers
+        DrawText("RANK", 140, 115, 18, textBase);
+        DrawText("NAME", 240, 115, 18, textBase);
+        DrawText("SCORE", 500, 115, 18, textBase);
+
+        Rectangle clearBtns[PAGE_SIZE] = {0};
+        int idxs[PAGE_SIZE];
+        for (int i = 0; i < PAGE_SIZE; i++) idxs[i] = -1;
+
+        for (int row = 0; row < PAGE_SIZE; row++) {
+          int idx = start + row;
+          if (idx >= leaderboardCount) break;
+
+          idxs[row] = idx;
+
+          int y = 140 + row * 36;
+
+          DrawText(TextFormat("%d", idx + 1), 145, y, 20, textBase);
+          DrawText(leaderboard[idx].name, 240, y, 20, textBase);
+          DrawText(TextFormat("%d", leaderboard[idx].value), 500, y, 20, textBase);
+
+          // clear button (per score)
+          clearBtns[row] = (Rectangle){ 640, (float)(y - 2), 80, 28 };
+          bool hover = CheckCollisionPointRec(mousePoint, clearBtns[row]);
+
+          DrawRectangleLinesEx(clearBtns[row], 2, hover ? highlight : textBase);
+          DrawText("CLEAR", (int)clearBtns[row].x + 10, (int)clearBtns[row].y + 5, 18, hover ? highlight : textBase);
+        }
+
+        // page controls
+        Rectangle prevBtn = { 270, 520, 90, 32 };
+        Rectangle nextBtn = { 440, 520, 90, 32 };
+
+        int maxPage = (leaderboardCount <= 0) ? 0 : (leaderboardCount - 1) / PAGE_SIZE;
+
+        bool prevHover = CheckCollisionPointRec(mousePoint, prevBtn);
+        bool nextHover = CheckCollisionPointRec(mousePoint, nextBtn);
+
+        DrawRectangleLinesEx(prevBtn, 2, prevHover ? highlight : textBase);
+        DrawRectangleLinesEx(nextBtn, 2, nextHover ? highlight : textBase);
+
+        DrawText("PREV", (int)prevBtn.x + 18, (int)prevBtn.y + 6, 20, prevHover ? highlight : textBase);
+        DrawText("NEXT", (int)nextBtn.x + 18, (int)nextBtn.y + 6, 20, nextHover ? highlight : textBase);
+
+        DrawText(TextFormat("Page %d/%d", scoresPage + 1, maxPage + 1), 345, 560, 18, textBase);
+
+        // info if empty
+        if (leaderboardCount == 0) {
+          DrawText("No scores yet.", 320, 320, 22, textBase);
+        }
+      } break;
     }
 
-    break;
-}
-
-
-    case(SETTINGS):
-      ClearBackground(bgColor);
-      DrawText("SETTINGS", 20, 20, 40, DARKPURPLE);
-      break;      
-    }
     EndDrawing();
-    //draw-menu----------------------------------------------------------- 
-   
   }
-  
+  UnloadGameAudio();
   CloseWindow();
   return 0;
 }
