@@ -13,7 +13,7 @@
 #define SQUARE_SIZE 24
 #define LEFT  -1
 #define RIGHT  1
-
+#define SPAWN_DELAY_FRAMES 15
 #define PAGE_SIZE 10
 #define MAX_SCORES 200
 #define MAX_NAME_LEN 16
@@ -69,6 +69,9 @@ static CellState grid[COLS][ROWS];
 static float holdLeftTime = 0.0f;
 static float holdRightTime = 0.0f;
 
+static int spawnDelayFrames = 0;
+
+
 static const float DAS = 0.15f;
 static const float ARR = 0.05f;
 
@@ -76,7 +79,7 @@ static bool itsOver = false;
 
 /* timing + scoring */
 static int frameCounter = 0;
-static int scrollSpeed  = 3;
+static int scrollSpeed  = 1;
 
 static int score = 0;
 static int linesCleared = 0;
@@ -107,6 +110,28 @@ static Music musicNormal;
 static Music musicFast;
 static bool audioReady = false;
 static bool playingFast = false;
+static Sound sfxLineClear;
+static Sound sfxTetris; 
+static bool sfxLineClearReady = false;
+
+/* --- ADDED: soft drop ARR + "must release" between pieces --- */
+static float holdDownTime = 0.0f;
+static bool downBlocked = false;
+static const float SD_DAS = 0.00f;
+static const float SD_ARR = 0.03f;
+
+/* --- ADDED: line clear freeze + blink animation --- */
+static bool clearingLines = false;
+static int clearTimerFrames = 0;
+
+#define LINE_CLEAR_DELAY_FRAMES 20
+#define LINE_CLEAR_BLINK_EVERY  6
+
+static int blinkFrameCounter = 0;
+static bool blinkOn = false;
+
+static int linesToClear[4];
+static int linesToClearCount = 0;
 
 /* ===================== SHAPES ===================== */
 
@@ -179,7 +204,6 @@ static Color Mix(Color a, Color b, float t) {
 /* ===================== LEADERBOARD (LOAD/SAVE/SORT) ===================== */
 
 static void SortLeaderboard(void) {
-  // simple bubble sort (small lists) descending by score
   for (int i = 0; i < leaderboardCount - 1; i++) {
     for (int j = 0; j < leaderboardCount - 1 - i; j++) {
       if (leaderboard[j].value < leaderboard[j + 1].value) {
@@ -222,7 +246,6 @@ static void LoadLeaderboardFromFile(void) {
 
   leaderboardCount = readN;
 
-  // safety: ensure null termination
   for (int i = 0; i < leaderboardCount; i++) {
     leaderboard[i].name[MAX_NAME_LEN - 1] = '\0';
   }
@@ -239,7 +262,6 @@ static void AddScoreToLeaderboard(const char *name, int value) {
 
     leaderboard[leaderboardCount++] = e;
   } else {
-    // list full: replace the last only if better
     SortLeaderboard();
     if (leaderboard[leaderboardCount - 1].value < value) {
       strncpy(leaderboard[leaderboardCount - 1].name, name, MAX_NAME_LEN - 1);
@@ -260,7 +282,6 @@ static void RemoveScoreAtIndex(int idx) {
   }
   leaderboardCount--;
 
-  // keep page valid
   int maxPage = (leaderboardCount <= 0) ? 0 : (leaderboardCount - 1) / PAGE_SIZE;
   if (scoresPage > maxPage) scoresPage = maxPage;
 
@@ -274,7 +295,12 @@ static bool CanPlace(PiecesFormat t, int rot, int px, int py) {
     int gx = px + SHAPES[t][rot][i][0];
     int gy = py + SHAPES[t][rot][i][1];
 
-    if (gx < 0 || gx >= COLS || gy < 0 || gy >= ROWS) return false;
+    if (gx < 1 || gx >= COLS - 1) return false;
+    if (gy >= ROWS) return false;
+
+    //allow blocks above the visible top
+    if (gy < 0) continue;
+
     if (grid[gx][gy] == BOARD_LIMIT || grid[gx][gy] == PLACED_PIECE) return false;
   }
   return true;
@@ -285,35 +311,80 @@ static PiecesFormat RandomType(void) {
 }
 
 static int ClearFullLines(void) {
-    int cleared = 0;
-    int writeRow = ROWS - 2;
+  int cleared = 0;
+  int writeRow = ROWS - 2;
 
-    //from the bottom to the top
-    for (int readRow = ROWS - 2; readRow >= 0; readRow--) {
-        bool full = true;
-        for (int x = 1; x < COLS - 1; x++) {
-            if (grid[x][readRow] != PLACED_PIECE) { full = false; break; }
-        }
-
-        if (full) {
-            cleared++;
-        } else {
-            if (writeRow != readRow) {
-                for (int x = 1; x < COLS - 1; x++) {
-                    grid[x][writeRow] = grid[x][readRow];
-                }
-            }
-            writeRow--;
-        }
+  for (int readRow = ROWS - 2; readRow >= 0; readRow--) {
+    bool full = true;
+    for (int x = 1; x < COLS - 1; x++) {
+      if (grid[x][readRow] != PLACED_PIECE) { full = false; break; }
     }
 
-    for (int y = writeRow; y >= 0; y--) {
+    if (full) {
+      cleared++;
+    } else {
+      if (writeRow != readRow) {
         for (int x = 1; x < COLS - 1; x++) {
-            grid[x][y] = EMPTY;
+          grid[x][writeRow] = grid[x][readRow];
         }
+      }
+      writeRow--;
     }
+  }
 
-    return cleared;
+  for (int y = writeRow; y >= 0; y--) {
+    for (int x = 1; x < COLS - 1; x++) {
+      grid[x][y] = EMPTY;
+    }
+  }
+
+  return cleared;
+}
+
+/* --- find full lines without clearing yet (for animation) --- */
+static int FindFullLines(int outLines[4]) {
+  int count = 0;
+
+  for (int y = 0; y < ROWS - 1; y++) {
+    bool full = true;
+    for (int x = 1; x < COLS - 1; x++) {
+      if (grid[x][y] != PLACED_PIECE) { full = false; break; }
+    }
+    if (full) {
+      if (count < 4) outLines[count++] = y;
+    }
+  }
+  return count;
+}
+
+/* --- apply clear using known lines (after delay) --- */
+static void ApplyLineClearNow(const int clearLines[4], int clearCount) {
+  if (clearCount <= 0) return;
+
+  bool toClear[ROWS] = {0};
+  for (int i = 0; i < clearCount; i++) {
+    int y = clearLines[i];
+    if (y >= 0 && y < ROWS - 1) toClear[y] = true;
+  }
+
+  int writeRow = ROWS - 2;
+
+  for (int readRow = ROWS - 2; readRow >= 0; readRow--) {
+    if (toClear[readRow]) continue;
+
+    if (writeRow != readRow) {
+      for (int x = 1; x < COLS - 1; x++) {
+        grid[x][writeRow] = grid[x][readRow];
+      }
+    }
+    writeRow--;
+  }
+
+  for (int y = writeRow; y >= 0; y--) {
+    for (int x = 1; x < COLS - 1; x++) {
+      grid[x][y] = EMPTY;
+    }
+  }
 }
 
 /* ===================== SCORING ===================== */
@@ -334,15 +405,13 @@ static void ApplyScoring(int clearedThisMove) {
     default: add = 0; break;
   }
 
-  // back-to-back only for Tetris (4 lines)
   if (clearedThisMove == 4) {
-    if (backToBack) add += add / 2; // +50%
+    if (backToBack) add += add / 2;
     backToBack = true;
   } else if (clearedThisMove > 0) {
     backToBack = false;
   }
 
-  // combo
   if (clearedThisMove > 0) {
     combo++;
     if (combo > 0) add += (50 * combo * level);
@@ -352,7 +421,7 @@ static void ApplyScoring(int clearedThisMove) {
 
   score += add;
 
-  scrollSpeed = 3 + (level - 1);
+  scrollSpeed = 1 + (level - 1);
   if (scrollSpeed > 30) scrollSpeed = 30;
   frameCounter = 0;
 }
@@ -363,12 +432,39 @@ static void LockCurrentPiece(void) {
   for (int i = 0; i < 4; i++) {
     int gx = cur.x + SHAPES[cur.type][cur.rot][i][0];
     int gy = cur.y + SHAPES[cur.type][cur.rot][i][1];
-    grid[gx][gy] = PLACED_PIECE;
+
+    // ADDED: only write inside visible grid (gy can be < 0 now)
+    if (gy >= 0) grid[gx][gy] = PLACED_PIECE;
   }
   pieceActive = false;
 
-  int cleared = ClearFullLines();
-  ApplyScoring(cleared);
+  // ADDED: if holding DOWN when locking, require release for next piece
+  if (IsKeyDown(KEY_DOWN)) {
+    downBlocked = true;
+    holdDownTime = 0.0f;
+  }
+
+  // ADDED: line clear "freeze + blink" instead of instant clear
+  linesToClearCount = FindFullLines(linesToClear);
+
+  if (linesToClearCount > 0) {
+    clearingLines = true;
+    clearTimerFrames = LINE_CLEAR_DELAY_FRAMES;
+    blinkFrameCounter = 0;
+    blinkOn = false;
+
+    if (sfxLineClearReady) {
+        if (linesToClearCount == 4)
+            PlaySound(sfxTetris);
+        else
+            PlaySound(sfxLineClear);
+    }
+    // scoring will happen after delay (when we actually clear)
+  } else {
+    // preserve combo reset behavior when no line is cleared
+    ApplyScoring(0);
+    spawnDelayFrames = SPAWN_DELAY_FRAMES;
+  }
 }
 
 static void GenerateRandomPiece(void) {
@@ -382,9 +478,7 @@ static void GenerateRandomPiece(void) {
   if (!CanPlace(cur.type, cur.rot, cur.x, cur.y)) {
     itsOver = true;
     pieceActive = false;
-    
-    
-    // start the "save score?" flow
+
     goFlow = GO_ASK_SAVE;
     nameInput[0] = '\0';
     nameLen = 0;
@@ -522,10 +616,24 @@ static void GridGraphic(Color gridLine, Color placedColor, Color wallColor) {
           DrawRectangleLines(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, gridLine);
           break;
 
-        case PLACED_PIECE:
-          DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, placedColor);
+        case PLACED_PIECE: {
+          Color fill = placedColor;
+
+          // blink lines that will be cleared
+          if (clearingLines) {
+            bool isClearLine = false;
+            for (int i = 0; i < linesToClearCount; i++) {
+              if (linesToClear[i] == y) { isClearLine = true; break; }
+            }
+            if (isClearLine) {
+              if (blinkOn) fill = (Color){255, 255, 255, 200};
+              else         fill = placedColor;
+            }
+          }
+
+          DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, fill);
           DrawRectangleLines(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, gridLine);
-          break;
+        } break;
 
         case BOARD_LIMIT:
           DrawRectangle(xPos, yPos, SQUARE_SIZE, SQUARE_SIZE, wallColor);
@@ -546,6 +654,9 @@ static void DrawActivePiece(Color activeColor) {
     int gx = cur.x + SHAPES[cur.type][cur.rot][i][0];
     int gy = cur.y + SHAPES[cur.type][cur.rot][i][1];
 
+    // don't draw blocks above the visible top
+    if (gy < 0) continue;
+
     int xPos = BOARD_X_AXIS + gx * SQUARE_SIZE;
     int yPos = BOARD_Y_AXIS + gy * SQUARE_SIZE;
 
@@ -553,7 +664,6 @@ static void DrawActivePiece(Color activeColor) {
   }
 }
 
-/* preview WITHOUT outline */
 static void DrawPiecePreview(PiecesFormat t, int px, int py, int cell, Color fill) {
   int minX = 999, minY = 999;
 
@@ -576,7 +686,33 @@ static void DrawPiecePreview(PiecesFormat t, int px, int py, int cell, Color fil
 static void UpdateGameplay(void) {
   if (itsOver) return;
 
-  if (!pieceActive) GenerateRandomPiece();
+  // freeze gameplay during line clear animation
+  if (clearingLines) {
+    blinkFrameCounter++;
+    if (blinkFrameCounter >= LINE_CLEAR_BLINK_EVERY) {
+      blinkFrameCounter = 0;
+      blinkOn = !blinkOn;
+    }
+
+    clearTimerFrames--;
+    if (clearTimerFrames <= 0) {
+      ApplyLineClearNow(linesToClear, linesToClearCount);
+      ApplyScoring(linesToClearCount);
+
+      clearingLines = false;
+      linesToClearCount = 0;
+      spawnDelayFrames = SPAWN_DELAY_FRAMES;
+    }
+    return;
+  }
+
+  if (!pieceActive) {
+    if (spawnDelayFrames > 0) {
+      spawnDelayFrames--;
+      return; // congela a lógica de gameplay nesse intervalo
+    }
+    GenerateRandomPiece();
+  }
   if (itsOver) return;
 
   if (pieceActive) {
@@ -591,11 +727,31 @@ static void UpdateGameplay(void) {
       return;
     }
 
-    // soft drop (+1*level per cell moved)
-    if (IsKeyDown(KEY_DOWN)) {
-      int oldY = cur.y;
-      TryMove(0, 1);
-      if (cur.y > oldY) score += 1 * level;
+    // soft drop with ARR + "must release" between pieces
+    float dt = GetFrameTime();
+
+    if (!IsKeyDown(KEY_DOWN)) {
+      downBlocked = false;
+      holdDownTime = 0.0f;
+    }
+
+    if (IsKeyDown(KEY_DOWN) && !downBlocked) {
+      if (holdDownTime == 0.0f) {
+        int oldY = cur.y;
+        TryMove(0, 1);
+        if (cur.y > oldY) score += 1 * level;
+      }
+
+      holdDownTime += dt;
+
+      if (holdDownTime >= SD_DAS) {
+        while (holdDownTime >= SD_DAS + SD_ARR) {
+          int oldY = cur.y;
+          TryMove(0, 1);
+          if (cur.y > oldY) score += 1 * level;
+          holdDownTime -= SD_ARR;
+        }
+      }
     }
   }
 
@@ -610,14 +766,26 @@ static void RestartGame(void) {
   itsOver = false;
   pieceActive = false;
   frameCounter = 0;
+  spawnDelayFrames = 0;
 
   holdLeftTime = 0.0f;
   holdRightTime = 0.0f;
 
+  // reset soft drop state
+  holdDownTime = 0.0f;
+  downBlocked = false;
+
+  // reset line clear anim state
+  clearingLines = false;
+  clearTimerFrames = 0;
+  linesToClearCount = 0;
+  blinkFrameCounter = 0;
+  blinkOn = false;
+
   score = 0;
   linesCleared = 0;
   level = 1;
-  scrollSpeed = 3;
+  scrollSpeed = 1;
 
   combo = -1;
   backToBack = false;
@@ -645,10 +813,9 @@ static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle n
       goFlow = GO_SHOW_GAMEOVER;
     }
   } else if (goFlow == GO_ENTER_NAME) {
-    // typing
     int c = GetCharPressed();
     while (c > 0) {
-      if (c >= 32 && c <= 126) { // basic printable ASCII
+      if (c >= 32 && c <= 126) {
         if (nameLen < MAX_NAME_LEN - 1) {
           nameInput[nameLen++] = (char)c;
           nameInput[nameLen] = '\0';
@@ -664,7 +831,6 @@ static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle n
       }
     }
 
-    // enter to save
     if (IsKeyPressed(KEY_ENTER)) {
       const char *finalName = nameInput;
       if (nameLen == 0) finalName = "PLAYER";
@@ -672,7 +838,6 @@ static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle n
       goFlow = GO_SHOW_GAMEOVER;
     }
 
-    // click outside? (optional) ignore
     (void)panel; (void)inputBox;
   }
 }
@@ -707,7 +872,6 @@ static void DrawGameOverOverlay(
     DrawText("YES", (int)yesBtn.x + 30, (int)yesBtn.y + 8, 24, yesC);
     DrawText("NO",  (int)noBtn.x  + 40, (int)noBtn.y  + 8, 24, noC);
 
-    // update interactions
     UpdateGameOverOverlay(panel, yesBtn, noBtn, (Rectangle){0});
 
   } else if (goFlow == GO_ENTER_NAME) {
@@ -750,7 +914,6 @@ static void UpdateScoresScreen(Rectangle backBtn, Rectangle prevBtn, Rectangle n
     if (scoresPage < maxPage) scoresPage++;
   }
 
-  // clear buttons
   for (int i = 0; i < PAGE_SIZE; i++) {
     if (indices[i] < 0) continue;
     if (CheckCollisionPointRec(m, clearBtns[i]) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -759,18 +922,24 @@ static void UpdateScoresScreen(Rectangle backBtn, Rectangle prevBtn, Rectangle n
     }
   }
 
-  // back handled in main loop
   (void)backBtn;
 }
+
+/* ===================== AUDIO ===================== */
 
 static void InitGameAudio(void) {
   InitAudioDevice();
 
-  musicNormal = LoadMusicStream("songs/Victor-Severo-RaytetrisRGB.ogg");
-  musicFast   = LoadMusicStream("songs/Victor-Severo-RaytetrisRGB-Brutal.ogg");
+  sfxLineClear = LoadSound("songs/lineclear.wav");
+  SetSoundVolume(sfxLineClear, 1.0f);
+  sfxTetris    = LoadSound("songs/tetris.wav");
+  SetSoundVolume(sfxLineClear, 0.9f);
+  sfxLineClearReady = true;
+  musicNormal = LoadMusicStream("songs/Victor-Severo-Raytetris.ogg");
+  musicFast   = LoadMusicStream("songs/Victor-Severo-Raytetris-Brutal.ogg");
 
   SetMusicVolume(musicNormal, 0.50f);
-  SetMusicVolume(musicFast,   0.50f);
+  SetMusicVolume(musicFast,   0.40f);
 
   audioReady = true;
   playingFast = false;
@@ -784,13 +953,18 @@ static void UnloadGameAudio(void) {
 
   UnloadMusicStream(musicNormal);
   UnloadMusicStream(musicFast);
-
+  
+  if (sfxLineClearReady) {
+    UnloadSound(sfxLineClear);
+    UnloadSound(sfxTetris);
+    sfxLineClearReady = false;
+  }
+  
   CloseAudioDevice();
   audioReady = false;
 }
 
 static bool IsDangerZone(void) {
-  // Top 7 rows: y = 0..6
   for (int y = 0; y <= 6; y++) {
     for (int x = 1; x < COLS - 1; x++) {
       if (grid[x][y] == PLACED_PIECE) return true;
@@ -834,16 +1008,16 @@ static void SwitchToNormalMusic(void) {
 static void UpdateGameplayMusic(void) {
   if (!audioReady) return;
 
-  //keep streams updated so the music does not stop suddenly
+  // keep streams updated so the music does not stop suddenly
   if (playingFast) UpdateMusicStream(musicFast);
   else             UpdateMusicStream(musicNormal);
 
-  //changes music state
+  // changes music state
   if (!itsOver) {
     if (IsDangerZone()) SwitchToFastMusic();
     else                SwitchToNormalMusic();
   } else {
-    //stops music at game over
+    // stops music at game over
     StopGameplayMusic();
   }
 }
@@ -854,7 +1028,7 @@ int main(void) {
 
   ThemeColors Themes[THEME_COUNT] = {
     [PURPLE_THEME]={PURPLE,DARKPURPLE, (Color){150, 28, 176,255}, "Purple"},
-    [RED_THEME]={(Color){207, 72, 72, 255}, MAROON, (Color){235, 80, 99, 255}, "Red"},
+    [RED_THEME]={(Color){235, 63, 83,255},(Color){128, 18, 31, 255}, (Color){235, 80, 99, 255}, "Red"},
     [GREEN_THEME]={GREEN, DARKGREEN, LIME, "Green"},
     [BLUE_THEME]={BLUE, DARKBLUE, SKYBLUE, "Blue"},
     [YELLOW_THEME]={YELLOW, GOLD, (Color){223, 230, 41,255}, "Yellow"},
@@ -864,10 +1038,10 @@ int main(void) {
   const int screenWidth = 800;
   const int screenHeight = 600;
 
-  const char *title = "RAYTETRIS RGB BETA V0.1 by edutavr";
+  const char *title = "RAYTETRIS";
   const char *gameOver = "GAME OVER";
   const char *restartText = "Click here to restart";
-  const int fontSize = 39;
+  const int fontSize = 100;
 
   InitWindow(screenWidth, screenHeight, "TETRIS BETA V0.1");
   SetTargetFPS(60);
@@ -897,7 +1071,6 @@ int main(void) {
     Color textBase  = Themes[currentTheme].text;
     Color highlight = Themes[currentTheme].highlight;
 
-    // derive gameplay palette
     Color gameBg      = Mix(bgColor, BLACK, 0.65f);
     Color gridLine    = Mix(textBase, gameBg, 0.70f);
     Color wallColor   = Mix(textBase, gameBg, 0.30f);
@@ -907,7 +1080,6 @@ int main(void) {
 
     Vector2 mousePoint = GetMousePosition();
 
-    // top-left back label used in GAMEPLAY and SCORES
     int backW = MeasureText("BACK", 20);
     Rectangle backBtn = { 20, 20, (float)backW, 20 };
 
@@ -915,7 +1087,6 @@ int main(void) {
     int themeW = MeasureText(themeLabel, 20);
     Rectangle themeButton = { (float)(centerPlay + 25), 550, (float)themeW, 20 };
 
-    // -------------------- UPDATE (input/state) --------------------
     switch (currentScreen) {
 
       case MAINSCREEN: {
@@ -928,10 +1099,22 @@ int main(void) {
           holdLeftTime = 0.0f;
           holdRightTime = 0.0f;
 
+          holdDownTime = 0.0f;
+          downBlocked = false;
+
+	  spawnDelayFrames = 0;
+
+          // reset line clear anim state
+          clearingLines = false;
+          clearTimerFrames = 0;
+          linesToClearCount = 0;
+          blinkFrameCounter = 0;
+          blinkOn = false;
+
           score = 0;
           linesCleared = 0;
           level = 1;
-          scrollSpeed = 3;
+          scrollSpeed = 1;
 
           combo = -1;
           backToBack = false;
@@ -943,7 +1126,7 @@ int main(void) {
           nextType = RandomType();
 
           currentScreen = GAMEPLAY;
-	  StartGameplayMusic();
+          StartGameplayMusic();
         }
 
         if (CheckCollisionPointRec(mousePoint, scoresButton) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -958,27 +1141,25 @@ int main(void) {
 
       case GAMEPLAY: {
         UpdateGameplay();
-	UpdateGameplayMusic();
+        UpdateGameplayMusic();
 
         if (CheckCollisionPointRec(mousePoint, backBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-	  StopGameplayMusic();
+          StopGameplayMusic();
           currentScreen = MAINSCREEN;
         }
 
-        // only allow restart click when the classic game over panel is visible
         if (itsOver && goFlow == GO_SHOW_GAMEOVER && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
           RestartGame();
-	  StartGameplayMusic();
+          StartGameplayMusic();
         }
       } break;
 
       case SCORES: {
         if (CheckCollisionPointRec(mousePoint, backBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
           currentScreen = MAINSCREEN;
-	  StopGameplayMusic();
+          StopGameplayMusic();
         }
 
-        // build clear buttons list for current page
         Rectangle clearBtns[PAGE_SIZE] = {0};
         int idxs[PAGE_SIZE];
         for (int i = 0; i < PAGE_SIZE; i++) idxs[i] = -1;
@@ -1001,7 +1182,6 @@ int main(void) {
       } break;
     }
 
-    // -------------------- DRAW --------------------
     BeginDrawing();
 
     switch (currentScreen) {
@@ -1036,11 +1216,9 @@ int main(void) {
         DrawPiecePreview(nextType, 380, 240, 18, activeColor);
 
         if (itsOver) {
-          // 1) first show "save score?" / name input
           if (goFlow != GO_SHOW_GAMEOVER) {
             DrawGameOverOverlay(screenWidth, screenHeight, hudText, highlight);
           } else {
-            // 2) then show the classic game over screen you already had
             const int goSize = 50;
             const int restartSize = 20;
 
@@ -1068,7 +1246,6 @@ int main(void) {
         int end = start + PAGE_SIZE;
         if (end > leaderboardCount) end = leaderboardCount;
 
-        // headers
         DrawText("RANK", 140, 115, 18, textBase);
         DrawText("NAME", 240, 115, 18, textBase);
         DrawText("SCORE", 500, 115, 18, textBase);
@@ -1089,7 +1266,6 @@ int main(void) {
           DrawText(leaderboard[idx].name, 240, y, 20, textBase);
           DrawText(TextFormat("%d", leaderboard[idx].value), 500, y, 20, textBase);
 
-          // clear button (per score)
           clearBtns[row] = (Rectangle){ 640, (float)(y - 2), 80, 28 };
           bool hover = CheckCollisionPointRec(mousePoint, clearBtns[row]);
 
@@ -1097,7 +1273,6 @@ int main(void) {
           DrawText("CLEAR", (int)clearBtns[row].x + 10, (int)clearBtns[row].y + 5, 18, hover ? highlight : textBase);
         }
 
-        // page controls
         Rectangle prevBtn = { 270, 520, 90, 32 };
         Rectangle nextBtn = { 440, 520, 90, 32 };
 
@@ -1114,7 +1289,6 @@ int main(void) {
 
         DrawText(TextFormat("Page %d/%d", scoresPage + 1, maxPage + 1), 345, 560, 18, textBase);
 
-        // info if empty
         if (leaderboardCount == 0) {
           DrawText("No scores yet.", 320, 320, 22, textBase);
         }
@@ -1123,6 +1297,7 @@ int main(void) {
 
     EndDrawing();
   }
+
   UnloadGameAudio();
   CloseWindow();
   return 0;
