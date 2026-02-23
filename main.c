@@ -108,6 +108,8 @@ static int scoresPage = 0;
 // ===== AUDIO =====
 static Music musicNormal;
 static Music musicFast;
+static Music musicMenu;
+static float menuMusicDelay = 0.0f;
 static bool audioReady = false;
 static bool playingFast = false;
 static Sound sfxLineClear;
@@ -802,7 +804,7 @@ static void RestartGame(void) {
 
 static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle noBtn, Rectangle inputBox) {
   Vector2 m = GetMousePosition();
-
+  DrawText("BACK", 20, 20, 20, RAYWHITE);
   if (goFlow == GO_ASK_SAVE) {
     if (CheckCollisionPointRec(m, yesBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
       goFlow = GO_ENTER_NAME;
@@ -937,9 +939,11 @@ static void InitGameAudio(void) {
   sfxLineClearReady = true;
   musicNormal = LoadMusicStream("songs/Victor-Severo-Raytetris.ogg");
   musicFast   = LoadMusicStream("songs/Victor-Severo-Raytetris-Brutal.ogg");
+  musicMenu = LoadMusicStream("songs/Victor-Severo-Raytetris-MENU.ogg");
 
   SetMusicVolume(musicNormal, 0.50f);
   SetMusicVolume(musicFast,   0.40f);
+  SetMusicVolume(musicMenu, 0.20f);
 
   audioReady = true;
   playingFast = false;
@@ -953,6 +957,7 @@ static void UnloadGameAudio(void) {
 
   UnloadMusicStream(musicNormal);
   UnloadMusicStream(musicFast);
+  UnloadMusicStream(musicMenu);
   
   if (sfxLineClearReady) {
     UnloadSound(sfxLineClear);
@@ -1065,6 +1070,8 @@ int main(void) {
   Rectangle playButton   = { (float)centerPlay, 240, (float)playW, 40 };
   Rectangle scoresButton = { (float)centerScores, 300, (float)scoresW, 40 };
 
+  PlayMusicStream(musicMenu);
+
   while (!WindowShouldClose()) {
 
     Color bgColor   = Themes[currentTheme].background;
@@ -1124,7 +1131,7 @@ int main(void) {
           nameLen = 0;
 
           nextType = RandomType();
-
+	  menuMusicDelay = 0.0f;
           currentScreen = GAMEPLAY;
           StartGameplayMusic();
         }
@@ -1145,7 +1152,11 @@ int main(void) {
 
         if (CheckCollisionPointRec(mousePoint, backBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
           StopGameplayMusic();
+	  StopMusicStream(musicMenu);
+	  SeekMusicStream(musicMenu, 0.0f);
+	  menuMusicDelay = 1.0f; 
           currentScreen = MAINSCREEN;
+	  break;
         }
 
         if (itsOver && goFlow == GO_SHOW_GAMEOVER && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -1182,7 +1193,22 @@ int main(void) {
       } break;
     }
 
+    //updates menu music's delay
+    if (menuMusicDelay > 0.0f) {
+      menuMusicDelay -= GetFrameTime();
+      if (menuMusicDelay <= 0.0f) {
+        menuMusicDelay = 0.0f;
+        PlayMusicStream(musicMenu);
+      }
+    }
+    
+    //updates stream when user is at MAINSCREEN or SCORES
+    if (currentScreen == MAINSCREEN || currentScreen == SCORES) {
+      UpdateMusicStream(musicMenu);
+    }
+    
     BeginDrawing();
+    if (currentScreen == MAINSCREEN) UpdateMusicStream(musicMenu);
 
     switch (currentScreen) {
 
@@ -1226,11 +1252,11 @@ int main(void) {
             int restartWidth = MeasureText(restartText, restartSize);
 
             int centerX = screenWidth / 2;
-
             DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), (Color){0, 0, 0, 130});
 
             DrawText(gameOver, centerX - goWidth / 2, 230, goSize, highlight);
             DrawText(restartText, centerX - restartWidth / 2, 300, restartSize, hudText);
+	    DrawText("BACK", 20, 20, 20, RAYWHITE);
           }
         }
       } break;
