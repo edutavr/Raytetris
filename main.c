@@ -709,7 +709,7 @@ static void UpdateGameplay(void) {
   if (!pieceActive) {
     if (spawnDelayFrames > 0) {
       spawnDelayFrames--;
-      return; // congela a lógica de gameplay nesse intervalo
+      return; //freezes gameplay at this interval
     }
     GenerateRandomPiece();
   }
@@ -1043,7 +1043,7 @@ int main(void) {
   const char *restartText = "Click here to restart";
   const int fontSize = 100;
 
-  InitWindow(screenWidth, screenHeight, "TETRIS BETA V0.1");
+  InitWindow(screenWidth, screenHeight, "Raytetris");
   SetTargetFPS(60);
   InitGameAudio();
   SetRandomSeed((unsigned int)time(NULL));
