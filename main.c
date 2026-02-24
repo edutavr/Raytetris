@@ -21,8 +21,10 @@
 #define MAX_NAME_LEN 16
 #define LEADERBOARD_FILE "leaderboard.dat"
 #define KEYBINDS_FILE    "keybinds.dat"
-#define KEYBIND_COUNT    6
+#define KEYBIND_COUNT    7
 #define GAMEPAD_ID       0
+#define MIN_START_LEVEL 1
+#define MAX_START_LEVEL 19
 
 /* ===================== TYPES ===================== */
 
@@ -80,6 +82,7 @@ typedef struct Keybinds {
   Binding hardDrop;
   Binding rotateCW;
   Binding rotateCCW;
+  Binding pause;
 } Keybinds;
 
 typedef enum SettingsFlow {
@@ -103,6 +106,10 @@ static bool itsOver = false;
 
 static int frameCounter = 0;
 static int scrollSpeed  = 1;
+static int startLevel = 1;
+static bool prevHoverLevel = false;
+static bool gamePaused = false;
+static float pauseCooldown = 0.0f;
 
 static int score        = 0;
 static int linesCleared = 0;
@@ -135,6 +142,8 @@ static Sound sfxTetris;
 static Sound sfxTick;
 static bool  sfxLineClearReady = false;
 static bool  sfxTickReady      = false;
+static Sound sfxGameOver;
+static bool  sfxGameOverReady = false;
 
 /* --- Soft drop --- */
 static float holdDownTime = 0.0f;
@@ -160,6 +169,7 @@ static Keybinds keys = {
   /* hardDrop   */ { KEY_SPACE, -1 },
   /* rotateCW   */ { KEY_UP,    -1 },
   /* rotateCCW  */ { KEY_X,     -1 },
+  /* pause */      { KEY_P,     -1 },
 };
 
 static SettingsFlow settingsFlow   = SF_IDLE;
@@ -167,7 +177,7 @@ static int          rebindingIndex = -1;
 static bool         rebindingGP    = false; /* true = waiting gamepad, false = waiting keyboard */
 
 static const char *keybindLabels[KEYBIND_COUNT] = {
-  "Move Left", "Move Right", "Soft Drop", "Hard Drop", "Rotate CW", "Rotate CCW"
+  "Move Left", "Move Right", "Soft Drop", "Hard Drop", "Rotate CW", "Rotate CCW", "Pause"
 };
 
 /* --- Hover tracking for tick sfx --- */
@@ -336,13 +346,14 @@ static void LoadKeybinds(void) {
 
 static Binding *BindingByIndex(int i) {
   switch (i) {
-    case 0: return &keys.moveLeft;
-    case 1: return &keys.moveRight;
-    case 2: return &keys.softDrop;
-    case 3: return &keys.hardDrop;
-    case 4: return &keys.rotateCW;
-    case 5: return &keys.rotateCCW;
-    default: return NULL;
+  case 0: return &keys.moveLeft;
+  case 1: return &keys.moveRight;
+  case 2: return &keys.softDrop;
+  case 3: return &keys.hardDrop;
+  case 4: return &keys.rotateCW;
+  case 5: return &keys.rotateCCW;
+  case 6: return &keys.pause;
+  default: return NULL;
   }
 }
 
@@ -426,6 +437,10 @@ static void InitGameAudio(void) {
   SetSoundVolume(sfxTick, 0.6f);
   sfxTickReady = true;
 
+  sfxGameOver = LoadSound("songs/Sound-Effect-Game-Over.wav");
+  SetSoundVolume(sfxGameOver, 0.9f);
+ sfxGameOverReady = true;
+
   musicNormal = LoadMusicStream("songs/Victor-Severo-Raytetris.ogg");
   musicFast   = LoadMusicStream("songs/Victor-Severo-Raytetris-Brutal.ogg");
   musicMenu   = LoadMusicStream("songs/Victor-Severo-Raytetris-MENU.ogg");
@@ -454,6 +469,10 @@ static void UnloadGameAudio(void) {
   if (sfxTickReady) {
     UnloadSound(sfxTick);
     sfxTickReady = false;
+  }
+  if (sfxGameOverReady) {
+    UnloadSound(sfxGameOver);
+    sfxGameOverReady = false;
   }
   CloseAudioDevice();
   audioReady = false;
@@ -637,6 +656,8 @@ static void GenerateRandomPiece(void) {
     itsOver     = true;
     pieceActive = false;
     goFlow      = GO_ASK_SAVE;
+    StopGameplayMusic();
+    if (sfxGameOverReady) PlaySound(sfxGameOver);
     nameInput[0] = '\0';
     nameLen      = 0;
     return;
@@ -775,7 +796,10 @@ static void DrawPiecePreview(PiecesFormat t, int px, int py, int cell, Color fil
 
 static void UpdateGameplay(void) {
   if (itsOver) return;
-
+  if (gamePaused){
+    return;
+  }
+  
   if (clearingLines) {
     blinkFrameCounter++;
     if (blinkFrameCounter >= LINE_CLEAR_BLINK_EVERY) {
@@ -832,6 +856,8 @@ static void UpdateGameplay(void) {
 
 static void RestartGame(void) {
   itsOver      = false;
+  gamePaused = false;
+  pauseCooldown = 0.0f;
   pieceActive  = false;
   frameCounter = 0;
   spawnDelayFrames = 0;
@@ -848,9 +874,15 @@ static void RestartGame(void) {
   blinkOn = false;
 
   score        = 0;
-  linesCleared = 0;
-  level        = 1;
-  scrollSpeed  = 1;
+  linesCleared = (startLevel - 1) * 10;
+  level        = startLevel;
+
+  if (level < 10) scrollSpeed = 1 + (level - 1);
+  else if (level <= 12) scrollSpeed = 12;
+  else if (level <= 15) scrollSpeed = 15;
+  else if (level <= 18) scrollSpeed = 20;
+  else if (level <= 28) scrollSpeed = 30;
+  else                  scrollSpeed = 60;
 
   combo      = -1;
   backToBack = false;
@@ -1029,6 +1061,10 @@ int main(void) {
     int themeW = MeasureText(themeLabel, 20);
     Rectangle themeButton = { (float)(centerPlay + 25), 550, (float)themeW, 20 };
 
+    const char *lvlLabel = TextFormat("Start Level: < %d >", startLevel);
+    int lvlW = MeasureText(lvlLabel, 28);
+    Rectangle levelButton = { (float)(screenWidth/2 - lvlW/2), 420, (float)lvlW, 28 };
+
     /* ---- UPDATE SWITCH ---- */
     switch (currentScreen) {
 
@@ -1036,27 +1072,45 @@ int main(void) {
         bool hPlay     = CheckCollisionPointRec(mousePoint, playButton);
         bool hScores   = CheckCollisionPointRec(mousePoint, scoresButton);
         bool hSettings = CheckCollisionPointRec(mousePoint, settingsButton);
+        bool hLevel = CheckCollisionPointRec(mousePoint, levelButton);
         if (hPlay     && !prevHoverPlay)      PlayTick();
         if (hScores   && !prevHoverScoresBtn) PlayTick();
         if (hSettings && !prevHoverSettings)  PlayTick();
+        if (hLevel    && !prevHoverLevel)     PlayTick();
         prevHoverPlay      = hPlay;
         prevHoverScoresBtn = hScores;
         prevHoverSettings  = hSettings;
+        prevHoverLevel     = hLevel;
 
         if (hPlay && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
           GenerateGrid();
-          itsOver = false; pieceActive = false; frameCounter = 0;
+          itsOver = false;
+          pieceActive = false;
+          frameCounter = 0;
           holdLeftTime = holdRightTime = holdDownTime = 0.0f;
-          downBlocked = false; spawnDelayFrames = 0;
-          clearingLines = false; clearTimerFrames = 0;
-          linesToClearCount = 0; blinkFrameCounter = 0; blinkOn = false;
+          downBlocked = false;
+          spawnDelayFrames = 0;
+          clearingLines = false;
+          clearTimerFrames = 0;
+          linesToClearCount = 0;
+          blinkFrameCounter = 0;
+          blinkOn = false;
           score = 0;
-	  linesCleared = 0;
-	  level = 1;
-	  scrollSpeed = 1;
+          level = startLevel;
+          linesCleared = (startLevel - 1) * 10;
+          
+          if (level < 10) scrollSpeed = 1 + (level - 1);
+          else if (level <= 12) scrollSpeed = 12;
+          else if (level <= 15) scrollSpeed = 15;
+          else if (level <= 18) scrollSpeed = 20;
+          else if (level <= 28) scrollSpeed = 30;
+          else                  scrollSpeed = 60;
+          
           combo = -1;
-	  backToBack = false;
-          goFlow = GO_SHOW_GAMEOVER; nameInput[0] = '\0'; nameLen = 0;
+          backToBack = false;
+          goFlow = GO_SHOW_GAMEOVER;
+          nameInput[0] = '\0';
+          nameLen = 0;
           nextType = RandomType();
           menuMusicDelay = 0.0f;
           StopMusicStream(musicMenu);
@@ -1072,6 +1126,18 @@ int main(void) {
         }
         if (CheckCollisionPointRec(mousePoint, themeButton) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
           currentTheme = (ThemeOptions)((currentTheme+1) % THEME_COUNT);
+        
+        if (hLevel) {
+          if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            startLevel++;
+            if (startLevel > MAX_START_LEVEL) startLevel = MIN_START_LEVEL;  /* wrap */
+          }
+          if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
+            startLevel--;
+            if (startLevel < MIN_START_LEVEL) startLevel = MAX_START_LEVEL;  /* wrap */
+          }
+        }
+        
       } break;
 
       case GAMEPLAY: {
@@ -1086,6 +1152,26 @@ int main(void) {
           menuMusicDelay = 1.0f;
           currentScreen  = MAINSCREEN;
           break;
+        }
+        
+        if(BindingPressed(keys.pause)){
+          
+          if(pauseCooldown <= 0.0f) {
+            gamePaused = !gamePaused;
+            pauseCooldown = 10.0f;       
+          } else {
+            if(gamePaused) {
+              gamePaused = false;
+            }
+          }
+
+          if (gamePaused) {
+            if (playingFast) PauseMusicStream(musicFast);
+            else             PauseMusicStream(musicNormal);
+          } else {
+            if (playingFast) ResumeMusicStream(musicFast);
+            else             ResumeMusicStream(musicNormal);
+          }     
         }
 
         UpdateGameplay();
@@ -1206,7 +1292,7 @@ int main(void) {
               { settingsFlow = SF_WAITING_GP; rebindingIndex = i; rebindingGP = true; }
           }
           /* reset button */
-          Rectangle resetBtn = { 280, 510, 240, 36 };
+          Rectangle resetBtn = { 280, 550, 240, 36 };
           bool hReset = CheckCollisionPointRec(mousePoint, resetBtn);
           if (hReset && !prevHoverReset) PlayTick();
           prevHoverReset = hReset;
@@ -1215,6 +1301,7 @@ int main(void) {
               { KEY_LEFT,  -1 }, { KEY_RIGHT, -1 },
               { KEY_DOWN,  -1 }, { KEY_SPACE, -1 },
               { KEY_UP,    -1 }, { KEY_X,     -1 },
+	      { KEY_P,    -1 },
             };
             settingsFlow = SF_IDLE;
           }
@@ -1227,8 +1314,15 @@ int main(void) {
       menuMusicDelay -= GetFrameTime();
       if (menuMusicDelay <= 0.0f) { menuMusicDelay = 0.0f; PlayMusicStream(musicMenu); }
     }
+    
+    if (pauseCooldown > 0.0f) {  /*  */
+      pauseCooldown -= GetFrameTime(); //pause cooldown
+    }
+    
     if (currentScreen == MAINSCREEN || currentScreen == SCORES || currentScreen == SETTINGS)
       UpdateMusicStream(musicMenu);
+
+
 
     /* ---- DRAW SWITCH ---- */
     BeginDrawing();
@@ -1242,11 +1336,13 @@ int main(void) {
         Color cPlay     = CheckCollisionPointRec(mousePoint, playButton)     ? highlight : textBase;
         Color cScores   = CheckCollisionPointRec(mousePoint, scoresButton)   ? highlight : textBase;
         Color cSettings = CheckCollisionPointRec(mousePoint, settingsButton) ? highlight : textBase;
+        Color cLevel = CheckCollisionPointRec(mousePoint, levelButton) ? highlight : textBase;
 
         DrawText("Play Game", centerPlay,     240, 40, cPlay);
         DrawText("Scores",    centerScores,   300, 40, cScores);
         DrawText("Settings",  centerSettings, 360, 40, cSettings);
         DrawText(themeLabel,  centerPlay + 25, 550, 20, textBase);
+        DrawText(lvlLabel, screenWidth/2 - lvlW/2, 420, 28, cLevel);
       } break;
 
       case GAMEPLAY: {
@@ -1255,12 +1351,22 @@ int main(void) {
 
         GridGraphic(gridLine, placedColor, wallColor);
         DrawActivePiece(activeColor);
-
+	
         DrawText(TextFormat("Score: %d", score),        380, 100, 20, hudText);
         DrawText(TextFormat("Lines: %d", linesCleared), 380, 130, 20, hudText);
         DrawText(TextFormat("Level: %d", level),        380, 160, 20, hudText);
         DrawText("Next:", 380, 210, 20, hudText);
         DrawPiecePreview(nextType, 380, 240, 18, activeColor);
+
+	if (gamePaused) {
+	  DrawRectangle(0, 0, screenWidth, screenHeight, (Color){0, 0, 0, 255});
+	  const char *pt = "PAUSED";
+	  int pw = MeasureText(pt, 60);
+	  DrawText(pt, screenWidth/2 - pw/2, screenHeight/2 - 60, 60, highlight);
+	  const char *ph = TextFormat("Press %s to resume", KeyName(keys.pause.key));
+	  int phw = MeasureText(ph, 20);
+	  DrawText(ph, screenWidth/2 - phw/2, screenHeight/2 + 10, 20, hudText);
+	}
 
         if (itsOver) {
           if (goFlow != GO_SHOW_GAMEOVER) {
@@ -1361,9 +1467,9 @@ int main(void) {
         }
 
         if (!gpConnected)
-          DrawText("No gamepad detected", 390, 150 + KEYBIND_COUNT*55, 16, Mix(textBase, bgColor, 0.4f));
+          DrawText("No gamepad detected", 530, 140 + KEYBIND_COUNT*55, 16, Mix(textBase, bgColor, 0.4f));
 
-        Rectangle resetBtn = { 280, 510, 240, 36 };
+        Rectangle resetBtn = { 280, 550, 240, 36 };
         bool hReset = CheckCollisionPointRec(mousePoint, resetBtn);
         Color resetC = hReset ? highlight : textBase;
         DrawRectangleLinesEx(resetBtn, 2, resetC);
