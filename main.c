@@ -1039,7 +1039,7 @@ int main(void) {
   const char *restartText = "Click here to restart";
   const int   fontSize    = 100;
 
-  InitWindow(screenWidth, screenHeight, "Raytetris");
+  InitWindow(screenWidth, screenHeight, "Rayblocks");
   SetWindowState(FLAG_WINDOW_RESIZABLE);
   RenderTexture2D target = LoadRenderTexture(screenWidth, screenHeight);
   SetExitKey(0);
