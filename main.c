@@ -1103,14 +1103,9 @@ int main(void) {
       (GetMousePosition().y - offsetY) / scale
     };
 
-    Rectangle muteBtn = { (float)(GetRenderWidth() - 36), 4, 28, 28 };
-    Rectangle muteBtnVirt = {
-      (muteBtn.x - offsetX) / scale,
-      (muteBtn.y - offsetY) / scale,
-      muteBtn.width  / scale,
-      muteBtn.height / scale
-    };
 
+    Rectangle muteBtnVirt = { (float)(screenWidth - 36), 4, 28, 28 };
+    
     hMute = CheckCollisionPointRec(mousePoint, muteBtnVirt);
     if (hMute && !prevHoverMute) PlayTick();
     prevHoverMute = hMute;
