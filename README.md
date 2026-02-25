@@ -1,4 +1,4 @@
-# <img src="https://i.ibb.co/JW0gxs61/Sem-T-tulo-1.png" width="50"> RAY TETRIS<img src="https://i.ibb.co/JW0gxs61/Sem-T-tulo-1.png" width="50">
+# <img src="https://i.ibb.co/JW0gxs61/Sem-T-tulo-1.png" width="50"> RAYBLOCKS<img src="https://i.ibb.co/JW0gxs61/Sem-T-tulo-1.png" width="50">
 
 
 RayTetris is a Tetris-inspired game built in C using raylib.
