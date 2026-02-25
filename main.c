@@ -929,8 +929,7 @@ static void RestartGame(void) {
 
 /* ===================== GAME OVER OVERLAY ===================== */
 
-static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle noBtn, Rectangle inputBox) {
-  Vector2 m = GetMousePosition();
+static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle noBtn, Rectangle inputBox, Vector2 m) {
   if (goFlow == GO_ASK_SAVE) {
     if (CheckCollisionPointRec(m, yesBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
       goFlow = GO_ENTER_NAME; nameInput[0] = '\0'; nameLen = 0;
@@ -956,7 +955,7 @@ static void UpdateGameOverOverlay(Rectangle panel, Rectangle yesBtn, Rectangle n
   }
 }
 
-static void DrawGameOverOverlay(int screenWidth, int screenHeight, Color hudText, Color highlight) {
+static void DrawGameOverOverlay(int screenWidth, int screenHeight, Color hudText, Color highlight, Vector2 mousePoint) {
   Rectangle panel = (Rectangle){ 160, 170, 480, 230 };
   DrawRectangleRec(panel, (Color){0,0,0,200});
   DrawRectangleLinesEx(panel, 2, RAYWHITE);
@@ -969,7 +968,7 @@ static void DrawGameOverOverlay(int screenWidth, int screenHeight, Color hudText
 
     Rectangle yesBtn = { panel.x + 110,                    panel.y + 150, 110, 40 };
     Rectangle noBtn  = { panel.x + panel.width - 220,      panel.y + 150, 110, 40 };
-    Vector2 m = GetMousePosition();
+    Vector2 m = mousePoint;
 
     Color yesC = CheckCollisionPointRec(m, yesBtn) ? highlight : hudText;
     Color noC  = CheckCollisionPointRec(m, noBtn)  ? highlight : hudText;
@@ -978,7 +977,7 @@ static void DrawGameOverOverlay(int screenWidth, int screenHeight, Color hudText
     DrawText("YES", (int)yesBtn.x + 30, (int)yesBtn.y + 8, 24, yesC);
     DrawText("NO",  (int)noBtn.x  + 40, (int)noBtn.y  + 8, 24, noC);
 
-    UpdateGameOverOverlay(panel, yesBtn, noBtn, (Rectangle){0});
+    UpdateGameOverOverlay(panel, yesBtn, noBtn, (Rectangle){0}, mousePoint);
 
   } else if (goFlow == GO_ENTER_NAME) {
     const char *t = "Type your name:";
@@ -986,7 +985,7 @@ static void DrawGameOverOverlay(int screenWidth, int screenHeight, Color hudText
     DrawText(TextFormat("Score: %d", score), (int)panel.x + 30, (int)panel.y + 70, 22, hudText);
 
     Rectangle inputBox = { panel.x + 80, panel.y + 120, panel.width - 160, 45 };
-    Vector2 m = GetMousePosition();
+    Vector2 m = mousePoint;
     Color boxC = CheckCollisionPointRec(m, inputBox) ? highlight : hudText;
     DrawRectangleLinesEx(inputBox, 2, boxC);
     DrawText(nameInput, (int)inputBox.x + 10, (int)inputBox.y + 10, 24, hudText);
@@ -994,15 +993,15 @@ static void DrawGameOverOverlay(int screenWidth, int screenHeight, Color hudText
     const char *hint = "Press ENTER to save";
     DrawText(hint, cx - MeasureText(hint, 18)/2, (int)panel.y + 180, 18, hudText);
 
-    UpdateGameOverOverlay(panel, (Rectangle){0}, (Rectangle){0}, inputBox);
+    UpdateGameOverOverlay(panel, (Rectangle){0}, (Rectangle){0}, inputBox, mousePoint);
   }
 }
 
 /* ===================== SCORES SCREEN ===================== */
 
 static void UpdateScoresScreen(Rectangle backBtn, Rectangle prevBtn, Rectangle nextBtn,
-                               Rectangle clearBtns[PAGE_SIZE], int indices[PAGE_SIZE]) {
-  Vector2 m = GetMousePosition();
+                               Rectangle clearBtns[PAGE_SIZE], int indices[PAGE_SIZE], Vector2 mousePoint) {
+  Vector2 m = mousePoint;
   if (CheckCollisionPointRec(m, prevBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
     { if (scoresPage > 0) scoresPage--; }
   if (CheckCollisionPointRec(m, nextBtn) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -1296,7 +1295,7 @@ int main(void) {
           prevHoverClear[i] = hC;
         }
 
-        UpdateScoresScreen(backBtn, prevBtn, nextBtn, clearBtns, idxs);
+        UpdateScoresScreen(backBtn, prevBtn, nextBtn, clearBtns, idxs, mousePoint);
       } break;
 
       case SETTINGS: {
@@ -1441,7 +1440,7 @@ int main(void) {
 
         if (itsOver) {
           if (goFlow != GO_SHOW_GAMEOVER) {
-            DrawGameOverOverlay(screenWidth, screenHeight, hudText, highlight);
+            DrawGameOverOverlay(screenWidth, screenHeight, hudText, highlight, mousePoint);
           } else {
             int goWidth      = MeasureText(gameOver,    50);
             int restartWidth = MeasureText(restartText, 20);
