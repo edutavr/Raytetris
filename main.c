@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
+#include "icon_data.h"
 
 /* ===================== CONFIG ===================== */
 
@@ -1040,6 +1041,9 @@ int main(void) {
   const int   fontSize    = 100;
 
   InitWindow(screenWidth, screenHeight, "Rayblocks");
+  Image icon = LoadImageFromMemory(".png", rayblocks_png, (int)rayblocks_png_len);
+  SetWindowIcon(icon);
+  UnloadImage(icon);
   SetWindowState(FLAG_WINDOW_RESIZABLE);
   RenderTexture2D target = LoadRenderTexture(screenWidth, screenHeight);
   SetExitKey(0);
