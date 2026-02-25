@@ -22,7 +22,7 @@
 #define LEADERBOARD_FILE "leaderboard.dat"
 #define KEYBINDS_FILE    "keybinds.dat"
 #define KEYBIND_COUNT    7
-#define GAMEPAD_ID       0
+//#define GAMEPAD_ID       0
 #define MIN_START_LEVEL 1
 #define MAX_START_LEVEL 19
 
@@ -41,7 +41,7 @@ typedef enum MainMenu {
 } MainMenu;
 
 typedef enum ThemeOptions {
-  PURPLE_THEME, RED_THEME, GREEN_THEME, BLUE_THEME, YELLOW_THEME, ORANGE_THEME, THEME_COUNT
+  PURPLE_THEME, RED_THEME, GREEN_THEME, BLUE_THEME, YELLOW_THEME, ORANGE_THEME, PINK_THEME, THEME_COUNT
 } ThemeOptions;
 
 typedef struct ThemeColors {
@@ -110,6 +110,8 @@ static int startLevel = 1;
 static bool prevHoverLevel = false;
 static bool gamePaused = false;
 static float pauseCooldown = 0.0f;
+static bool prevHoverMute = false;
+static bool hMute = false;
 
 static int score        = 0;
 static int linesCleared = 0;
@@ -137,6 +139,7 @@ static Music musicMenu;
 static float menuMusicDelay  = 0.0f;
 static bool  audioReady      = false;
 static bool  playingFast     = false;
+static bool musicMuted = false;
 static Sound sfxLineClear;
 static Sound sfxTetris;
 static Sound sfxTick;
@@ -344,6 +347,13 @@ static void LoadKeybinds(void) {
 
 /* ===================== KEYBIND HELPERS ===================== */
 
+static int GetActiveGamepadId(void) {
+  for (int i = 0; i < 4; i++) {              // Raylib costuma suportar 4
+    if (IsGamepadAvailable(i)) return i;
+  }
+  return -1;
+}
+
 static Binding *BindingByIndex(int i) {
   switch (i) {
   case 0: return &keys.moveLeft;
@@ -406,17 +416,25 @@ static const char *GPButtonName(int btn) {
 /* Check press/hold for a binding (keyboard OR gamepad) */
 static bool BindingDown(Binding b) {
   if (IsKeyDown(b.key)) return true;
-  if (b.gpButton >= 0 && IsGamepadAvailable(GAMEPAD_ID) &&
-      IsGamepadButtonDown(GAMEPAD_ID, b.gpButton)) return true;
+
+  int gid = GetActiveGamepadId();
+  if (b.gpButton >= 0 && gid >= 0 && IsGamepadButtonDown(gid, b.gpButton)) return true;
+
   return false;
 }
 
+
 static bool BindingPressed(Binding b) {
   if (IsKeyPressed(b.key)) return true;
-  if (b.gpButton >= 0 && IsGamepadAvailable(GAMEPAD_ID) &&
-      IsGamepadButtonPressed(GAMEPAD_ID, b.gpButton)) return true;
+
+  int gid = GetActiveGamepadId();
+  if (b.gpButton >= 0 && gid >= 0 && IsGamepadButtonPressed(gid, b.gpButton)) return true;
+
   return false;
 }
+
+
+
 
 /* ===================== AUDIO ===================== */
 
@@ -427,9 +445,9 @@ static void PlayTick(void) {
 static void InitGameAudio(void) {
   InitAudioDevice();
 
-  sfxLineClear = LoadSound("songs/lineclear.wav");
+  sfxLineClear = LoadSound("songs/lineclear.ogg");
   SetSoundVolume(sfxLineClear, 1.0f);
-  sfxTetris = LoadSound("songs/tetris.wav");
+  sfxTetris = LoadSound("songs/tetris.ogg");
   SetSoundVolume(sfxTetris, 0.9f);
   sfxLineClearReady = true;
 
@@ -437,7 +455,7 @@ static void InitGameAudio(void) {
   SetSoundVolume(sfxTick, 0.6f);
   sfxTickReady = true;
 
-  sfxGameOver = LoadSound("songs/Sound-Effect-Game-Over.wav");
+  sfxGameOver = LoadSound("songs/Sound-Effect-Game-Over.ogg");
   SetSoundVolume(sfxGameOver, 0.9f);
  sfxGameOverReady = true;
 
@@ -511,6 +529,19 @@ static void SwitchToNormalMusic(void) {
   StopMusicStream(musicFast);
   PlayMusicStream(musicNormal);
   playingFast = false;
+}
+
+static void SetMusicMuted(bool mute) {
+    musicMuted = mute;
+    if (mute) {
+        SetMusicVolume(musicNormal, 0.0f);
+        SetMusicVolume(musicFast,   0.0f);
+        SetMusicVolume(musicMenu,   0.0f);
+    } else {
+        SetMusicVolume(musicNormal, 0.50f);
+        SetMusicVolume(musicFast,   0.40f);
+        SetMusicVolume(musicMenu,   0.20f);
+    }
 }
 
 static void UpdateGameplayMusic(void) {
@@ -992,22 +1023,26 @@ int main(void) {
 
   ThemeColors Themes[THEME_COUNT] = {
     [PURPLE_THEME] = { PURPLE,  DARKPURPLE, (Color){150,28,176,255},  "Purple" },
-    [RED_THEME]    = { (Color){235,63,83,255}, (Color){128,18,31,255}, (Color){235,80,99,255}, "Red" },
+    [RED_THEME]    = { (Color){235,63,83,255}, (Color){128,18,31,255}, (Color){194,39,59,255}, "Red" },
     [GREEN_THEME]  = { GREEN,   DARKGREEN,  LIME,                      "Green"  },
     [BLUE_THEME]   = { BLUE,    (Color){17, 17, 133 ,255},   SKYBLUE,                   "Blue"   },
     [YELLOW_THEME] = { YELLOW,  (Color){214, 157, 0 ,255},       (Color){223,230,41,255},   "Yellow" },
     [ORANGE_THEME] = { ORANGE,  (Color){230,76,20,255}, (Color){245,148,12,255}, "Orange" },
+    [PINK_THEME] = { (Color){255,105,180,255}, (Color){180,30,100,255}, (Color){255,20,147,255}, "Pink" },
   };
 
   const int screenWidth  = 800;
   const int screenHeight = 600;
 
-  const char *title       = "RAYTETRIS";
+  const char *title       = "RAYBLOCKS";
   const char *gameOver    = "GAME OVER";
   const char *restartText = "Click here to restart";
   const int   fontSize    = 100;
 
   InitWindow(screenWidth, screenHeight, "Raytetris");
+  SetWindowState(FLAG_WINDOW_RESIZABLE);
+  RenderTexture2D target = LoadRenderTexture(screenWidth, screenHeight);
+  SetExitKey(0);
   SetTargetFPS(60);
   InitGameAudio();
   SetRandomSeed((unsigned int)time(NULL));
@@ -1041,18 +1076,43 @@ int main(void) {
 
   while (!WindowShouldClose()) {
 
+    if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
+    
     Color bgColor   = Themes[currentTheme].background;
     Color textBase  = Themes[currentTheme].text;
     Color highlight = Themes[currentTheme].highlight;
 
-    Color gameBg      = Mix(bgColor, BLACK, 0.65f);
-    Color gridLine    = Mix(textBase, gameBg, 0.70f);
+    Color gameBg      = Mix(bgColor, BLACK, 0.75f);
+    Color gridLine    = Mix(textBase, gameBg, 0.60f);
     Color wallColor   = Mix(textBase, gameBg, 0.30f);
     Color activeColor = highlight;
     Color placedColor = Mix(highlight, gameBg, 0.55f);
     Color hudText     = Mix(textBase, RAYWHITE, 0.65f);
 
-    Vector2 mousePoint = GetMousePosition();
+    float scaleX = (float)GetRenderWidth()  / (float)screenWidth;
+    float scaleY = (float)GetRenderHeight() / (float)screenHeight;
+    float scale  = (scaleX < scaleY) ? scaleX : scaleY;
+    float offsetX = ((float)GetRenderWidth()  - (float)screenWidth  * scale) / 2.0f;
+    float offsetY = ((float)GetRenderHeight() - (float)screenHeight * scale) / 2.0f;
+    Vector2 mousePoint = {
+      (GetMousePosition().x - offsetX) / scale,
+      (GetMousePosition().y - offsetY) / scale
+    };
+
+    Rectangle muteBtn = { (float)(GetRenderWidth() - 36), 4, 28, 28 };
+    Rectangle muteBtnVirt = {
+      (muteBtn.x - offsetX) / scale,
+      (muteBtn.y - offsetY) / scale,
+      muteBtn.width  / scale,
+      muteBtn.height / scale
+    };
+
+    hMute = CheckCollisionPointRec(mousePoint, muteBtnVirt);
+    if (hMute && !prevHoverMute) PlayTick();
+    prevHoverMute = hMute;
+
+    if (hMute && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+      SetMusicMuted(!musicMuted);
 
     int backW = MeasureText("BACK", 20);
     Rectangle backBtn = { 20, 20, (float)backW, 20 };
@@ -1061,7 +1121,7 @@ int main(void) {
     int themeW = MeasureText(themeLabel, 20);
     Rectangle themeButton = { (float)(centerPlay + 25), 550, (float)themeW, 20 };
 
-    const char *lvlLabel = TextFormat("Start Level: < %d >", startLevel);
+    const char *lvlLabel = TextFormat("Start Level: [ %d ]", startLevel);
     int lvlW = MeasureText(lvlLabel, 28);
     Rectangle levelButton = { (float)(screenWidth/2 - lvlW/2), 420, (float)lvlW, 28 };
 
@@ -1154,7 +1214,7 @@ int main(void) {
           break;
         }
         
-        if(BindingPressed(keys.pause)){
+        if(BindingPressed(keys.pause)&& !itsOver){
           
           if(pauseCooldown <= 0.0f) {
             gamePaused = !gamePaused;
@@ -1264,14 +1324,26 @@ int main(void) {
               }
             }
           }
-        } else if (settingsFlow == SF_WAITING_GP) {
-          if (IsKeyPressed(KEY_ESCAPE)) { settingsFlow = SF_IDLE; rebindingIndex = -1; }
-          else if (IsGamepadAvailable(GAMEPAD_ID)) {
+        }
+        else if (settingsFlow == SF_WAITING_GP) {
+
+          int gid = GetActiveGamepadId();   // ← aqui
+          bool gpConnected = (gid >= 0);
+
+          if (IsKeyPressed(KEY_ESCAPE)) {
+            settingsFlow = SF_IDLE;
+            rebindingIndex = -1;
+          }
+          else if (gpConnected) {
+
             for (int b = 0; b < 32; b++) {
-              if (IsGamepadButtonPressed(GAMEPAD_ID, b)) {
+              if (IsGamepadButtonPressed(gid, b)) {
+
                 Binding *bd = BindingByIndex(rebindingIndex);
                 if (bd) bd->gpButton = b;
-                settingsFlow = SF_IDLE; rebindingIndex = -1;
+
+                settingsFlow = SF_IDLE;
+                rebindingIndex = -1;
                 break;
               }
             }
@@ -1325,7 +1397,7 @@ int main(void) {
 
 
     /* ---- DRAW SWITCH ---- */
-    BeginDrawing();
+    BeginTextureMode(target);
 
     switch (currentScreen) {
 
@@ -1436,7 +1508,8 @@ int main(void) {
         DrawText("KEYBOARD", 390, 118, 18, textBase);
         DrawText("GAMEPAD",  530, 118, 18, textBase);
 
-        bool gpConnected = IsGamepadAvailable(GAMEPAD_ID);
+        int gid = GetActiveGamepadId();
+        bool gpConnected = (gid >= 0);
 
         for (int i = 0; i < KEYBIND_COUNT; i++) {
           int y = 150 + i * 55;
@@ -1477,16 +1550,34 @@ int main(void) {
 
         if (settingsFlow != SF_IDLE) {
           const char *hint = "Press ESC to cancel";
-          DrawText(hint, screenWidth/2 - MeasureText(hint, 18)/2, 560, 18, hudText);
+          DrawText(hint, 530, 560, 18, textBase);
         }
       } break;
     }
 
+    const char *muteLabel = musicMuted ? "[M]" : "[S]";
+    bool hMute = CheckCollisionPointRec(mousePoint, muteBtnVirt);
+    Color muteC = hMute ? highlight : (Color){textBase.r, textBase.g, textBase.b, 128};
+    DrawTextEx(GetFontDefault(), muteLabel, (Vector2){(int)muteBtnVirt.x + 4, (int)muteBtnVirt.y + 6}, 16, 1, muteC);
+    
+    EndTextureMode();
+
+    BeginDrawing();
+    ClearBackground(BLACK);
+    DrawTexturePro(
+                   target.texture,
+                   (Rectangle){ 0, (float)screenHeight, (float)screenWidth, -(float)screenHeight },
+                   (Rectangle){ offsetX, offsetY, (float)screenWidth * scale, (float)screenHeight * scale },
+                   (Vector2){ 0, 0 },
+                   0.0f,
+                   WHITE
+                   );
     EndDrawing();
   }
 
   SaveKeybinds();
   UnloadGameAudio();
+  UnloadRenderTexture(target);
   CloseWindow();
   return 0;
 }
